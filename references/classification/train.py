@@ -14,6 +14,7 @@ from torch import nn
 from torch.utils.data.dataloader import default_collate
 from torchvision.transforms.functional import InterpolationMode
 
+from utils_lyj import *
 
 def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None):
     model.train()
@@ -221,7 +222,68 @@ def main(args):
     )
 
     print("Creating model")
-    model = torchvision.models.get_model(args.model, weights=args.weights, num_classes=num_classes)
+    # model = torchvision.models.get_model(args.model, weights=args.weights, num_classes=num_classes)
+
+    """------------------------------------------
+    Quantization implement with HAWQ repository |
+    ------------------------------------------"""
+    # model = torchvision.models.mobilenet_v3_large(pretrained=True)
+    # model = torchvision.models.vit_h_14(weights=torchvision.models.ViT_H_14_Weights.IMAGENET1K_SWAG_LINEAR_V1)
+    import timm
+    # model = timm.create_model('vit_base_patch16_224',pretrained=True)
+    model = timm.create_model('vit_large_patch16_224',pretrained=True)
+    # for name,pp in model.named_parameters():
+    #     print(name)
+    # raise NotImplementedError
+    # for name,mm in model.named_modules():
+    #     print(name)
+    # print(model)
+    # raise NotImplementedError
+    # from quant_config import extra_config
+    from quant_config_vit import extra_config
+    clip_config = extra_config['clip-point-vit-l-16-fp']
+    # clip_config = extra_config['mb_large_8bit_clip_point']
+    # static_config = extra_config['mb_large_8bit_static_large_search_space']
+    # static_config = extra_config['mb_large_8bit_static_adjust']
+    model = hawq_quant(model,model_name='vit')
+    for name,m in model.named_modules():
+        # print(name)
+        # if name not in clip_config.keys() and f"{name}.Qact" not in clip_config.keys():
+        #     continue
+        setattr_depend(m, "bias_bit", 32)
+        setattr_depend(m, 'quant_mode', 'symmetric')
+        setattr_depend(m, 'quantize_bias', True)
+        setattr_depend(m, 'per_channel', True)
+        setattr_depend(m, 'act_percentile', 0)
+        setattr_depend(m, 'act_range_momentum', -1)
+        setattr_depend(m, 'weight_percentile', 0)
+        setattr_depend(m, 'fix_flag', False)
+        setattr_depend(m, 'ownname', name)
+
+        setattr_depend(m, 'full_precision_flag', False)##
+        setattr_depend(m, 'running_stat', args.running_stat)
+
+        if args.use_noise:
+            setattr_depend(m, 'use_noise', True)
+            setattr_depend(m,"noiseScale",0.05)
+
+        # setattr_depend(m, 'use_static', True)
+        # setattr_depend(m, 'static_num', static_config.get(name))
+
+        # setattr_depend(m, 'clip_point', clip_config.get(name))
+        # small 8bit :63.292
+        # small fp: ~67.
+        bitwidth = 6
+        setattr_depend(m, 'activation_bit', bitwidth)
+        setattr_depend(m, 'weight_bit', bitwidth)
+    print(model)
+    # raise NotImplementedError
+    # print_at_end = True
+    print_at_end = False
+    """------------------------------------------
+    Quantization implement with HAWQ repository |
+    ------------------------------------------"""
+
     model.to(device)
 
     if args.distributed and args.sync_bn:
@@ -330,10 +392,43 @@ def main(args):
         # We disable the cudnn benchmarking because it can noticeably affect the accuracy
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
+        """------------------------------------------
+        Quantization implement with HAWQ repository |
+        ------------------------------------------"""
+        # easyQuant_calibration_data(data_loader)
+
+        # model.eval()
+        # model = easyQuant(model)
+        # model = easyStatic(model)
+        # model = easyNoisy(model)
+        # raise NotImplementedError
+        """------------------------------------------
+        Quantization implement with HAWQ repository |
+        ------------------------------------------"""
         if model_ema:
             evaluate(model_ema, criterion, data_loader_test, device=device, log_suffix="EMA")
         else:
             evaluate(model, criterion, data_loader_test, device=device)
+
+        if print_at_end:
+            # print(model)
+            pair = []
+            for n,buf in model.named_buffers():
+                if n.endswith("x_min") or n.endswith("x_max"):
+                    pair += [buf]
+                    if len(pair)==2:
+                        print(n[:-6],pair[0].item(),pair[1].item())
+                        pair = []
+            pair = []
+            abs_max_dict = {}
+            for n,buf in model.named_buffers():
+                if n.endswith("x_min") or n.endswith("x_max"):
+                    pair += [buf]
+                    if len(pair)==2:
+                        print(n[:-6],pair[0].item(),pair[1].item())
+                        abs_max_dict[n[:-6]] = max(abs(pair[0].item()),abs(pair[1].item()))
+                        pair = []
+            # print(abs_max_dict)
         return
 
     print("Start training")
@@ -370,8 +465,21 @@ def get_args_parser(add_help=True):
     import argparse
 
     parser = argparse.ArgumentParser(description="PyTorch Classification Training", add_help=add_help)
+    """------------------------------------------
+    Quantization implement with HAWQ repository |
+    ------------------------------------------"""
+    parser.add_argument("--use-noise",dest="use_noise",help="",action="store_true",)
+    parser.add_argument("--running-stat",dest="running_stat",help="",action="store_true",)
 
-    parser.add_argument("--data-path", default="/datasets01/imagenet_full_size/061417/", type=str, help="dataset path")
+    """------------------------------------------
+    Quantization implement with HAWQ repository |
+    ------------------------------------------"""
+
+
+
+
+
+    parser.add_argument("--data-path", default="/home/datasets/imagenet/", type=str, help="dataset path")
     parser.add_argument("--model", default="resnet18", type=str, help="model name")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(

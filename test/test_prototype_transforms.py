@@ -555,10 +555,10 @@ class TestRandomAffine:
         if translate is not None:
             w_max = int(round(translate[0] * w))
             h_max = int(round(translate[1] * h))
-            assert -w_max <= params["translate"][0] <= w_max
-            assert -h_max <= params["translate"][1] <= h_max
+            assert -w_max <= params["translations"][0] <= w_max
+            assert -h_max <= params["translations"][1] <= h_max
         else:
-            assert params["translate"] == (0, 0)
+            assert params["translations"] == (0, 0)
 
         if scale is not None:
             assert scale[0] <= params["scale"] <= scale[1]
@@ -759,8 +759,7 @@ class TestGaussianBlur:
         if isinstance(kernel_size, (tuple, list)):
             assert transform.kernel_size == kernel_size
         else:
-            kernel_size = (kernel_size, kernel_size)
-            assert transform.kernel_size == kernel_size
+            assert transform.kernel_size == (kernel_size, kernel_size)
 
         if isinstance(sigma, (tuple, list)):
             assert transform.sigma == sigma
@@ -780,7 +779,7 @@ class TestGaussianBlur:
         torch.manual_seed(12)
         params = transform._get_params(inpt)
 
-        fn.assert_called_once_with(inpt, kernel_size, **params)
+        fn.assert_called_once_with(inpt, **params)
 
 
 class TestRandomColorOp:
@@ -1004,13 +1003,7 @@ class TestRandomErasing:
 
         if p:
             mock.assert_called_once_with(
-                inpt_sentinel,
-                i=i_sentinel,
-                j=j_sentinel,
-                h=h_sentinel,
-                w=w_sentinel,
-                v=v_sentinel,
-                inplace=transform.inplace,
+                inpt_sentinel, i=i_sentinel, j=j_sentinel, h=h_sentinel, w=w_sentinel, v=v_sentinel
             )
         else:
             mock.assert_not_called()
@@ -1115,18 +1108,13 @@ class TestContainers:
 
     @pytest.mark.parametrize("transform_cls", [transforms.Compose, transforms.RandomChoice, transforms.RandomOrder])
     @pytest.mark.parametrize(
-        "trfms",
-        [
-            [transforms.Pad(2), transforms.RandomCrop(28)],
-            [lambda x: 2.0 * x, transforms.Pad(2), transforms.RandomCrop(28)],
-        ],
+        "trfms", [[transforms.Pad(2), transforms.RandomCrop(28)], [lambda x: 2.0 * x, transforms.RandomCrop(28)]]
     )
     def test_ctor(self, transform_cls, trfms):
         c = transform_cls(trfms)
         inpt = torch.rand(1, 3, 32, 32)
         output = c(inpt)
         assert isinstance(output, torch.Tensor)
-        assert output.ndim == 4
 
 
 class TestRandomChoice:
@@ -1206,9 +1194,9 @@ class TestRandomIoUCrop:
         bboxes = make_bounding_box(format="XYXY", image_size=(32, 24), extra_dims=(6,))
         label = features.Label(torch.randint(0, 10, size=(6,)))
         ohe_label = features.OneHotLabel(torch.zeros(6, 10).scatter_(1, label.unsqueeze(1), 1))
-        masks = make_segmentation_mask((32, 24), num_objects=6)
-
-        sample = [image, bboxes, label, ohe_label, masks]
+        masks = make_segmentation_mask((32, 24))
+        ohe_masks = features.SegmentationMask(torch.randint(0, 2, size=(6, 32, 24)))
+        sample = [image, bboxes, label, ohe_label, masks, ohe_masks]
 
         fn = mocker.patch("torchvision.prototype.transforms.functional.crop", side_effect=lambda x, **params: x)
         is_within_crop_area = torch.tensor([0, 1, 0, 1, 0, 1], dtype=torch.bool)
@@ -1217,12 +1205,15 @@ class TestRandomIoUCrop:
         transform._get_params = mocker.MagicMock(return_value=params)
         output = transform(sample)
 
-        assert fn.call_count == 3
+        assert fn.call_count == 4
 
         expected_calls = [
             mocker.call(image, top=params["top"], left=params["left"], height=params["height"], width=params["width"]),
             mocker.call(bboxes, top=params["top"], left=params["left"], height=params["height"], width=params["width"]),
             mocker.call(masks, top=params["top"], left=params["left"], height=params["height"], width=params["width"]),
+            mocker.call(
+                ohe_masks, top=params["top"], left=params["left"], height=params["height"], width=params["width"]
+            ),
         ]
 
         fn.assert_has_calls(expected_calls)
@@ -1246,7 +1237,11 @@ class TestRandomIoUCrop:
 
         output_masks = output[4]
         assert isinstance(output_masks, features.SegmentationMask)
-        assert len(output_masks) == expected_within_targets
+        assert output_masks.shape[:-2] == masks.shape[:-2]
+
+        output_ohe_masks = output[5]
+        assert isinstance(output_ohe_masks, features.SegmentationMask)
+        assert len(output_ohe_masks) == expected_within_targets
 
 
 class TestScaleJitter:
@@ -1256,32 +1251,23 @@ class TestScaleJitter:
         scale_range = (0.5, 1.5)
 
         transform = transforms.ScaleJitter(target_size=target_size, scale_range=scale_range)
+
         sample = mocker.MagicMock(spec=features.Image, num_channels=3, image_size=image_size)
+        params = transform._get_params(sample)
 
-        n_samples = 5
-        for _ in range(n_samples):
+        assert "size" in params
+        size = params["size"]
 
-            params = transform._get_params(sample)
+        assert isinstance(size, tuple) and len(size) == 2
+        height, width = size
 
-            assert "size" in params
-            size = params["size"]
-
-            assert isinstance(size, tuple) and len(size) == 2
-            height, width = size
-
-            r_min = min(target_size[1] / image_size[0], target_size[0] / image_size[1]) * scale_range[0]
-            r_max = min(target_size[1] / image_size[0], target_size[0] / image_size[1]) * scale_range[1]
-
-            assert int(image_size[0] * r_min) <= height <= int(image_size[0] * r_max)
-            assert int(image_size[1] * r_min) <= width <= int(image_size[1] * r_max)
+        assert int(target_size[0] * scale_range[0]) <= height <= int(target_size[0] * scale_range[1])
+        assert int(target_size[1] * scale_range[0]) <= width <= int(target_size[1] * scale_range[1])
 
     def test__transform(self, mocker):
         interpolation_sentinel = mocker.MagicMock()
-        antialias_sentinel = mocker.MagicMock()
 
-        transform = transforms.ScaleJitter(
-            target_size=(16, 12), interpolation=interpolation_sentinel, antialias=antialias_sentinel
-        )
+        transform = transforms.ScaleJitter(target_size=(16, 12), interpolation=interpolation_sentinel)
         transform._transformed_types = (mocker.MagicMock,)
 
         size_sentinel = mocker.MagicMock()
@@ -1294,9 +1280,7 @@ class TestScaleJitter:
         mock = mocker.patch("torchvision.prototype.transforms._geometry.F.resize")
         transform(inpt_sentinel)
 
-        mock.assert_called_once_with(
-            inpt_sentinel, size=size_sentinel, interpolation=interpolation_sentinel, antialias=antialias_sentinel
-        )
+        mock.assert_called_once_with(inpt_sentinel, size=size_sentinel, interpolation=interpolation_sentinel)
 
 
 class TestRandomShortestSize:
@@ -1326,11 +1310,8 @@ class TestRandomShortestSize:
 
     def test__transform(self, mocker):
         interpolation_sentinel = mocker.MagicMock()
-        antialias_sentinel = mocker.MagicMock()
 
-        transform = transforms.RandomShortestSize(
-            min_size=[3, 5, 7], max_size=12, interpolation=interpolation_sentinel, antialias=antialias_sentinel
-        )
+        transform = transforms.RandomShortestSize(min_size=[3, 5, 7], max_size=12, interpolation=interpolation_sentinel)
         transform._transformed_types = (mocker.MagicMock,)
 
         size_sentinel = mocker.MagicMock()
@@ -1344,9 +1325,7 @@ class TestRandomShortestSize:
         mock = mocker.patch("torchvision.prototype.transforms._geometry.F.resize")
         transform(inpt_sentinel)
 
-        mock.assert_called_once_with(
-            inpt_sentinel, size=size_sentinel, interpolation=interpolation_sentinel, antialias=antialias_sentinel
-        )
+        mock.assert_called_once_with(inpt_sentinel, size=size_sentinel, interpolation=interpolation_sentinel)
 
 
 class TestSimpleCopyPaste:
@@ -1419,9 +1398,6 @@ class TestSimpleCopyPaste:
         masks[0, 3:9, 2:8] = 1
         masks[1, 20:30, 20:30] = 1
         labels = torch.tensor([1, 2])
-        blending = True
-        resize_interpolation = InterpolationMode.BILINEAR
-        antialias = None
         if label_type == features.OneHotLabel:
             labels = torch.nn.functional.one_hot(labels, num_classes=5)
         target = {
@@ -1449,9 +1425,7 @@ class TestSimpleCopyPaste:
 
         transform = transforms.SimpleCopyPaste()
         random_selection = torch.tensor([0, 1])
-        output_image, output_target = transform._copy_paste(
-            image, target, paste_image, paste_target, random_selection, blending, resize_interpolation, antialias
-        )
+        output_image, output_target = transform._copy_paste(image, target, paste_image, paste_target, random_selection)
 
         assert output_image.unique().tolist() == [2, 10]
         assert output_target["boxes"].shape == (4, 4)

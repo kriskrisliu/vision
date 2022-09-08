@@ -12,10 +12,16 @@ from torchvision.prototype.transforms import functional as F, InterpolationMode,
 from typing_extensions import Literal
 
 from ._transform import _RandomApplyTransform
-from ._utils import _check_sequence_input, _setup_angle, _setup_size, has_all, has_any, query_bounding_box, query_chw
-
-
-DType = Union[torch.Tensor, PIL.Image.Image, features._Feature]
+from ._utils import (
+    _check_sequence_input,
+    _parse_pad_padding,
+    _setup_angle,
+    _setup_size,
+    has_all,
+    has_any,
+    query_bounding_box,
+    query_chw,
+)
 
 
 class RandomHorizontalFlip(_RandomApplyTransform):
@@ -38,11 +44,7 @@ class Resize(Transform):
     ) -> None:
         super().__init__()
 
-        self.size = (
-            [size]
-            if isinstance(size, int)
-            else _setup_size(size, error_msg="Please provide only two dimensions (h, w) for size.")
-        )
+        self.size = _setup_size(size, error_msg="Please provide only two dimensions (h, w) for size.")
         self.interpolation = interpolation
         self.max_size = max_size
         self.antialias = antialias
@@ -58,12 +60,12 @@ class Resize(Transform):
 
 
 class CenterCrop(Transform):
-    def __init__(self, size: List[int]):
+    def __init__(self, output_size: List[int]):
         super().__init__()
-        self.size = size
+        self.output_size = output_size
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        return F.center_crop(inpt, output_size=self.size)
+        return F.center_crop(inpt, output_size=self.output_size)
 
 
 class RandomResizedCrop(Transform):
@@ -166,7 +168,7 @@ class FiveCrop(Transform):
         super().__init__()
         self.size = _setup_size(size, error_msg="Please provide only two dimensions (h, w) for size.")
 
-    def _transform(self, inpt: DType, params: Dict[str, Any]) -> Tuple[DType, DType, DType, DType, DType]:
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
         return F.five_crop(inpt, self.size)
 
     def forward(self, *inputs: Any) -> Any:
@@ -187,7 +189,7 @@ class TenCrop(Transform):
         self.size = _setup_size(size, error_msg="Please provide only two dimensions (h, w) for size.")
         self.vertical_flip = vertical_flip
 
-    def _transform(self, inpt: DType, params: Dict[str, Any]) -> List[DType]:
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
         return F.ten_crop(inpt, self.size, vertical_flip=self.vertical_flip)
 
     def forward(self, *inputs: Any) -> Any:
@@ -367,9 +369,9 @@ class RandomAffine(Transform):
             max_dy = float(self.translate[1] * height)
             tx = int(round(torch.empty(1).uniform_(-max_dx, max_dx).item()))
             ty = int(round(torch.empty(1).uniform_(-max_dy, max_dy).item()))
-            translate = (tx, ty)
+            translations = (tx, ty)
         else:
-            translate = (0, 0)
+            translations = (0, 0)
 
         if self.scale is not None:
             scale = float(torch.empty(1).uniform_(self.scale[0], self.scale[1]).item())
@@ -383,7 +385,7 @@ class RandomAffine(Transform):
                 shear_y = float(torch.empty(1).uniform_(self.shear[2], self.shear[3]).item())
 
         shear = (shear_x, shear_y)
-        return dict(angle=angle, translate=translate, scale=scale, shear=shear)
+        return dict(angle=angle, translations=translations, scale=scale, shear=shear)
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
         return F.affine(
@@ -427,7 +429,7 @@ class RandomCrop(Transform):
             padding = self.padding
             if isinstance(padding, Sequence):
                 padding = list(padding)
-            pad_left, pad_right, pad_top, pad_bottom = F._geometry._parse_pad_padding(padding)
+            pad_left, pad_right, pad_top, pad_bottom = _parse_pad_padding(padding)
             height += pad_top + pad_bottom
             width += pad_left + pad_right
 
@@ -483,7 +485,7 @@ class RandomCrop(Transform):
 class RandomPerspective(_RandomApplyTransform):
     def __init__(
         self,
-        distortion_scale: float = 0.5,
+        distortion_scale: float,
         fill: Union[int, float, Sequence[int], Sequence[float]] = 0,
         interpolation: InterpolationMode = InterpolationMode.BILINEAR,
         p: float = 0.5,
@@ -716,26 +718,23 @@ class ScaleJitter(Transform):
         target_size: Tuple[int, int],
         scale_range: Tuple[float, float] = (0.1, 2.0),
         interpolation: InterpolationMode = InterpolationMode.BILINEAR,
-        antialias: Optional[bool] = None,
     ):
         super().__init__()
         self.target_size = target_size
         self.scale_range = scale_range
         self.interpolation = interpolation
-        self.antialias = antialias
 
     def _get_params(self, sample: Any) -> Dict[str, Any]:
         _, orig_height, orig_width = query_chw(sample)
 
-        scale = self.scale_range[0] + torch.rand(1) * (self.scale_range[1] - self.scale_range[0])
-        r = min(self.target_size[1] / orig_height, self.target_size[0] / orig_width) * scale
-        new_width = int(orig_width * r)
-        new_height = int(orig_height * r)
+        r = self.scale_range[0] + torch.rand(1) * (self.scale_range[1] - self.scale_range[0])
+        new_width = int(self.target_size[1] * r)
+        new_height = int(self.target_size[0] * r)
 
         return dict(size=(new_height, new_width))
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        return F.resize(inpt, size=params["size"], interpolation=self.interpolation, antialias=self.antialias)
+        return F.resize(inpt, size=params["size"], interpolation=self.interpolation)
 
 
 class RandomShortestSize(Transform):
@@ -744,13 +743,11 @@ class RandomShortestSize(Transform):
         min_size: Union[List[int], Tuple[int], int],
         max_size: int,
         interpolation: InterpolationMode = InterpolationMode.BILINEAR,
-        antialias: Optional[bool] = None,
     ):
         super().__init__()
         self.min_size = [min_size] if isinstance(min_size, int) else list(min_size)
         self.max_size = max_size
         self.interpolation = interpolation
-        self.antialias = antialias
 
     def _get_params(self, sample: Any) -> Dict[str, Any]:
         _, orig_height, orig_width = query_chw(sample)
@@ -764,7 +761,7 @@ class RandomShortestSize(Transform):
         return dict(size=(new_height, new_width))
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        return F.resize(inpt, size=params["size"], interpolation=self.interpolation, antialias=self.antialias)
+        return F.resize(inpt, size=params["size"], interpolation=self.interpolation)
 
 
 class FixedSizeCrop(Transform):
@@ -802,7 +799,7 @@ class FixedSizeCrop(Transform):
 
         if needs_crop and bounding_boxes is not None:
             bounding_boxes = cast(
-                features.BoundingBox, F.crop(bounding_boxes, top=top, left=left, height=new_height, width=new_width)
+                features.BoundingBox, F.crop(bounding_boxes, top=top, left=left, height=height, width=width)
             )
             bounding_boxes = features.BoundingBox.new_like(
                 bounding_boxes,
