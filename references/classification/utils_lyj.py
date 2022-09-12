@@ -343,16 +343,18 @@ def hawq_quant(model,args=None,model_name=None):
         for name,module in model.named_modules():
             # if name not in extra_config['clip_point_8bit'].keys():
             #     continue
-            if isinstance(module, torch.nn.Conv2d):
-                qconv2d = QuantConv2d()
-                qconv2d.set_param(module)
-                new_module = qconv2d
-                print(f"conv2d,{name}")
+            if not name.startswith("blocks."):
+                continue
+            # if isinstance(module, torch.nn.Conv2d):
+            #     qconv2d = QuantConv2d()
+            #     qconv2d.set_param(module)
+            #     new_module = qconv2d
+            #     print(f"conv2d,{name}")
             elif isinstance(module, torch.nn.Linear):
                 qlinear = QuantLinear()
                 qlinear.set_param(module)
                 new_module = qlinear
-                print(f"linear,{name}")
+                # print(f"linear,{name}")
             else:
                 continue
             update_module(model, name, new_module=new_module)

@@ -231,22 +231,23 @@ def main(args):
     # model = torchvision.models.vit_h_14(weights=torchvision.models.ViT_H_14_Weights.IMAGENET1K_SWAG_LINEAR_V1)
     import timm
     # model = timm.create_model('vit_base_patch16_224',pretrained=True)
-    model = timm.create_model('vit_large_patch16_224',pretrained=True)
+    model = timm.create_model('deit_base_patch16_224',pretrained=True)
     # for name,pp in model.named_parameters():
     #     print(name)
     # raise NotImplementedError
     # for name,mm in model.named_modules():
     #     print(name)
+    # print("-"*80)
     # print(model)
+    # print("-"*80)
     # raise NotImplementedError
     # from quant_config import extra_config
     from quant_config_vit import extra_config
-    clip_config = extra_config['clip-point-vit-l-16-4bit-2nd']
-    # clip_config = extra_config['mb_large_8bit_clip_point']
-    # static_config = extra_config['mb_large_8bit_static_large_search_space']
+    # clip_config = extra_config['clip-point-vit-l-16-4bit-2nd']
+    clip_config = {}
     static_config = extra_config['clip-point-vit-l-16-4bit-static']
     noise_config = extra_config['clip-point-vit-l-16-4bit-noise-1st-3layers']
-    model = hawq_quant(model,model_name='vit')
+    model = hawq_quant(model,model_name='deit')
     for name,m in model.named_modules():
         # print(name)
         # if name not in clip_config.keys() and f"{name}.Qact" not in clip_config.keys():
@@ -268,20 +269,22 @@ def main(args):
             setattr_depend(m, 'use_noise', True)
             setattr_depend(m,"noiseScale",noise_config.get(name,0))
 
-        setattr_depend(m, 'use_static', args.use_static)
-        setattr_depend(m, 'static_num', static_config.get(name))
+        if args.use_static:
+            setattr_depend(m, 'use_static', args.use_static)
+            setattr_depend(m, 'static_num', static_config.get(name))
 
-        setattr_depend(m, 'clip_point', clip_config.get(name))
+        # setattr_depend(m, 'clip_point', clip_config.get(name))
         # print(name,clip_config.get(name))
+
         # small 8bit :63.292
         # small fp: ~67.
-        bitwidth = 4
+        bitwidth = 16
         setattr_depend(m, 'activation_bit', bitwidth)
         setattr_depend(m, 'weight_bit', bitwidth)
     print(model)
     # raise NotImplementedError
     # print_at_end = True
-    print_at_end = False
+    print_at_end = True
     """------------------------------------------
     Quantization implement with HAWQ repository |
     ------------------------------------------"""
@@ -399,10 +402,10 @@ def main(args):
         ------------------------------------------"""
         # easyQuant_calibration_data(data_loader)
 
-        model.eval()
+        # model.eval()
         # model_without_ddp = easyQuant(model_without_ddp)
         # model_without_ddp = easyStatic(model_without_ddp)
-        model_without_ddp = easyNoisy(model_without_ddp)
+        # model_without_ddp = easyNoisy(model_without_ddp)
         # raise NotImplementedError
         """------------------------------------------
         Quantization implement with HAWQ repository |

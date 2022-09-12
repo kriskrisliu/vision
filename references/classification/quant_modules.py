@@ -230,7 +230,6 @@ class QuantLinear(Module):
             xq = xq-noise
         output = (F.linear(xq, weight=self.weight_integer, bias=self.bias_integer) * correct_output_scale )
 
-
         # if self.ownname=="head":
         #     print(xq.shape)
         #     print(self.weight.shape)
