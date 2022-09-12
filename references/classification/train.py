@@ -241,10 +241,11 @@ def main(args):
     # raise NotImplementedError
     # from quant_config import extra_config
     from quant_config_vit import extra_config
-    clip_config = extra_config['clip-point-vit-l-16-fp']
+    clip_config = extra_config['clip-point-vit-l-16-4bit-2nd']
     # clip_config = extra_config['mb_large_8bit_clip_point']
     # static_config = extra_config['mb_large_8bit_static_large_search_space']
-    # static_config = extra_config['mb_large_8bit_static_adjust']
+    static_config = extra_config['clip-point-vit-l-16-4bit-static']
+    noise_config = extra_config['clip-point-vit-l-16-4bit-noise-1st-3layers']
     model = hawq_quant(model,model_name='vit')
     for name,m in model.named_modules():
         # print(name)
@@ -265,15 +266,16 @@ def main(args):
 
         if args.use_noise:
             setattr_depend(m, 'use_noise', True)
-            setattr_depend(m,"noiseScale",0.05)
+            setattr_depend(m,"noiseScale",noise_config.get(name,0))
 
-        # setattr_depend(m, 'use_static', True)
-        # setattr_depend(m, 'static_num', static_config.get(name))
+        setattr_depend(m, 'use_static', args.use_static)
+        setattr_depend(m, 'static_num', static_config.get(name))
 
-        # setattr_depend(m, 'clip_point', clip_config.get(name))
+        setattr_depend(m, 'clip_point', clip_config.get(name))
+        # print(name,clip_config.get(name))
         # small 8bit :63.292
         # small fp: ~67.
-        bitwidth = 6
+        bitwidth = 4
         setattr_depend(m, 'activation_bit', bitwidth)
         setattr_depend(m, 'weight_bit', bitwidth)
     print(model)
@@ -397,10 +399,10 @@ def main(args):
         ------------------------------------------"""
         # easyQuant_calibration_data(data_loader)
 
-        # model.eval()
-        # model = easyQuant(model)
-        # model = easyStatic(model)
-        # model = easyNoisy(model)
+        model.eval()
+        # model_without_ddp = easyQuant(model_without_ddp)
+        # model_without_ddp = easyStatic(model_without_ddp)
+        model_without_ddp = easyNoisy(model_without_ddp)
         # raise NotImplementedError
         """------------------------------------------
         Quantization implement with HAWQ repository |
@@ -470,7 +472,7 @@ def get_args_parser(add_help=True):
     ------------------------------------------"""
     parser.add_argument("--use-noise",dest="use_noise",help="",action="store_true",)
     parser.add_argument("--running-stat",dest="running_stat",help="",action="store_true",)
-
+    parser.add_argument("--use-static",dest="use_static",help="",action="store_true",)
     """------------------------------------------
     Quantization implement with HAWQ repository |
     ------------------------------------------"""

@@ -114,9 +114,9 @@ class QuantLinear(Module):
         s = super(QuantLinear, self).__repr__()
         s = "(" + s + " weight_bit={}, full_precision_flag={}, quantize_fn={})".format(
             self.weight_bit, self.full_precision_flag, self.quant_mode)
-        s += "use_noise={}, noiseScale={}, clip_point={}".format(self.use_noise,
+        s += " use_noise={}, noiseScale={:.3f}, clip_point={:.3f},".format(self.use_noise,
             self.noiseScale,self.clip_point)
-        s += f"use_static={self.use_static}, static_num={self.static_num}"
+        s += f" use_static={self.use_static}, static_num={self.static_num:.3f}"
         return s
 
     def set_param(self, linear):

@@ -5,6 +5,7 @@ from q_transformer import *
 import torch
 from tqdm import tqdm
 
+from quant_config_vit import extra_config
 
 # # Zero-shot prediction
 def accuracy(output, target, topk=(1,)):
@@ -28,8 +29,8 @@ def quant_to(model, layername):
 
 def fp_model(model):
     for n,m in model.named_modules():
-        if hasattr(m,"full_precision_flag"):
-            setattr(m,'full_precision_flag',True)
+        setattr_depend(m,'full_precision_flag',True)
+        setattr_depend(m,'running_stat',False)
     return model
 
 def load_clamp_scheme(model, layername, clip_point):
@@ -134,10 +135,10 @@ def load_static_num(model,layername,num):
 def easyStatic(model):
     print("start searching for static number!")
     clean_model(model)
-    dataVolume = 16
-    data_loader = torch.load("calibrationData1024-mobilev3-small.pt")[:dataVolume]#[:16]
+    dataVolume = 32
+    data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")[:dataVolume]#[:16]
 
-    clip_point_dict = extra_config['mb_large_8bit_clip_point']
+    clip_point_dict = extra_config['clip-point-vit-l-16-4bit-2nd']
     num_best_dict = {}
     for idx,(layername, abs_max) in enumerate(clip_point_dict.items()):
         model = quant_to(model, layername)
@@ -145,8 +146,8 @@ def easyStatic(model):
         layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max)
         lowest_loss = 100
         abs_max_best = 100
-        for step in [ii for ii in range(0,50)]+[-ii for ii in range(1,50)]:
-            num = step*0.01#abs_max/64/5*(step)
+        for step in [ii for ii in range(0,25)]+[-ii for ii in range(1,25)]:
+            num = step*0.02#abs_max/64/5*(step)
             layer_exists,model = load_static_num(model, layername, num)
             assert layer_exists
             total_loss = inference_all(model, data_loader, hook_layer=layername,scale=num)
@@ -167,32 +168,36 @@ def easyStatic(model):
 def easyNoisy(model, args=None):
     print("start searching for noisy scale!")
     clean_model(model)
-    data_loader = torch.load("calibrationData1024-mobilev3-small.pt")
+    data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")
+    # data_loader = data_loader[:len(data_loader)//2]
 
-    clip_point_dict = extra_config['mb_large_8bit_clip_point']
+    clip_point_dict = extra_config['clip-point-vit-l-16-4bit-2nd']
     scale_best_dict = {}
     for idx,(layername, abs_max) in enumerate(clip_point_dict.items()):
         model = quant_to(model, layername)
         model = noisy_to(model, layername)
+        # model = static_to(model, layername)
+        # layer_exists,model = load_static_num(model, layername, num)
         layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max)
         lowest_loss = 100
         abs_max_best = 100
-        for step in [ii*0.01 for ii in range(30)]:
+        for step in [ii*0.01 for ii in range(40)]:
+        # for step in [ii*0.01 for ii in range(1)]:
             scale = step#abs_max/64/5*(step)
             # print(f"scale={scale:.4f}")
             layer_exists,model = load_noisyScale(model, layername, scale)
             # print(model)
             assert layer_exists
             total_loss = inference_all(model, data_loader, hook_layer=layername,scale=scale)
-            print(model)
-            raise NotImplementedError
+            # print(model)
+            # raise NotImplementedError
             if total_loss<lowest_loss:
                 lowest_loss = total_loss
                 scale_best = scale
             if total_loss<0.0015:
                 break
         # raise NotImplementedError
-        print(f"Determine best scale={scale_best:.4f} for this layer={layername}")
+        print(f"[{idx}/{len(clip_point_dict)}]Determine best scale={scale_best:.4f} for this layer={layername}")
         layer_exists,model = load_noisyScale(model, layername, scale_best)
         assert layer_exists
         print("-"*20+f"[{idx}/{len(clip_point_dict)}] End of layername={layername}, scale_best={scale_best:.4f}"+"-"*20)
@@ -247,29 +252,36 @@ def easyQuant_txt(model, classnames, templates):
 # easyQuant image encoder
 @torch.no_grad()
 def easyQuant(model):
-    from quant_config_vit import extra_config
+    # from quant_config_vit import extra_config
     data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")[:]
-    clip_point_dict = extra_config['clip-point-vit-l-16-fp']
+    clip_point_dict = extra_config['clip-point-vit-l-16-4bit-1st']
     # clip_point_dict = extra_config['mb_large_fp_clip_point']
     model = fp_model(model)
+    print(model)
     # total_loss = inference_all(model, data_loader, hook_layer=None, scale="FP")
     # print("FP model:~62%")
     print("-"*80)
     abs_max_best_dict = {}
     for idx,(layername, abs_max) in enumerate(clip_point_dict.items()):
+        print(layername)
         model = quant_to(model, layername)
-        lowest_loss = 100
-        abs_max_best = 100
-        for step in range(1,15):
+        lowest_loss = 1000
+        abs_max_best = 1000
+        for step in ([10]+[ii for ii in range(1,10)]+[ii for ii in range(11,15)]):
             abs_max_attemp = abs_max*(step/10.)
             layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max_attemp)
-            # print(layername)
             assert layer_exists
+            if idx<70:
+                lowest_loss=0
+                abs_max_best = abs_max_attemp
+                break
             total_loss = inference_all(model, data_loader, hook_layer=layername, scale=f"{abs_max_attemp:.4f}")
             if total_loss<lowest_loss:
                 lowest_loss = total_loss
                 abs_max_best = abs_max_attemp
-        print(f"[{idx}/{len(clip_point_dict)}]Determine best abs_max={abs_max_best} for this layer={layername}")
+            if total_loss<0.05:
+                break
+        print(f"[{idx}/{len(clip_point_dict)}]For this layer={layername}, lowest_loss={lowest_loss}, determine best abs_max={abs_max_best}")
         layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max_best)
         assert layer_exists
         print("-"*20+f"[{idx}/{len(clip_point_dict)}] End of layername={layername}, abs_max_best={abs_max_best}"+"-"*20)
@@ -347,9 +359,11 @@ def hawq_quant(model,args=None,model_name=None):
     else:
         raise NotImplementedError
     return model
-def setattr_depend(m,name,val):
+def setattr_depend(m,name,val,verbose=False):
     if hasattr(m,name):
         setattr(m,name,val)
+        if verbose:
+            print(name)
         return True
     else:
         return False
