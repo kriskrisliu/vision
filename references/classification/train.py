@@ -242,11 +242,11 @@ def main(args):
     # print("-"*80)
     # raise NotImplementedError
     # from quant_config import extra_config
-    from quant_config_vit import extra_config
-    # clip_config = extra_config['clip-point-vit-l-16-4bit-2nd']
+    from quant_config_deit import extra_config
     clip_config = {}
-    static_config = extra_config['clip-point-vit-l-16-4bit-static']
-    noise_config = extra_config['clip-point-vit-l-16-4bit-noise-1st-3layers']
+    clip_config = extra_config['clip-point-deit_base_patch16_224-4bit']
+    # static_config = extra_config['clip-point-vit-l-16-4bit-static']
+    # noise_config = extra_config['clip-point-vit-l-16-4bit-noise-1st-3layers']
     model = hawq_quant(model,model_name='deit')
     for name,m in model.named_modules():
         # print(name)
@@ -273,12 +273,12 @@ def main(args):
             setattr_depend(m, 'use_static', args.use_static)
             setattr_depend(m, 'static_num', static_config.get(name))
 
-        # setattr_depend(m, 'clip_point', clip_config.get(name))
+        setattr_depend(m, 'clip_point', clip_config.get(name))
         # print(name,clip_config.get(name))
 
         # small 8bit :63.292
         # small fp: ~67.
-        bitwidth = 16
+        bitwidth = 4
         setattr_depend(m, 'activation_bit', bitwidth)
         setattr_depend(m, 'weight_bit', bitwidth)
     print(model)
