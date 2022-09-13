@@ -245,7 +245,7 @@ def main(args):
     from quant_config_deit import extra_config
     clip_config = {}
     clip_config = extra_config['clip-point-deit_base_patch16_224-4bit']
-    # static_config = extra_config['clip-point-vit-l-16-4bit-static']
+    static_config = extra_config['static-point-deit_base_patch16_224-4bit']
     # noise_config = extra_config['clip-point-vit-l-16-4bit-noise-1st-3layers']
     model = hawq_quant(model,model_name='deit')
     for name,m in model.named_modules():
@@ -402,9 +402,9 @@ def main(args):
         ------------------------------------------"""
         # easyQuant_calibration_data(data_loader)
 
-        # model.eval()
+        model.eval()
         # model_without_ddp = easyQuant(model_without_ddp)
-        # model_without_ddp = easyStatic(model_without_ddp)
+        model_without_ddp = easyStatic(model_without_ddp)
         # model_without_ddp = easyNoisy(model_without_ddp)
         # raise NotImplementedError
         """------------------------------------------

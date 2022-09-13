@@ -135,10 +135,10 @@ def load_static_num(model,layername,num):
 def easyStatic(model):
     print("start searching for static number!")
     clean_model(model)
-    dataVolume = 32
-    data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")[:dataVolume]#[:16]
+    # dataVolume = 32
+    data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")#[:dataVolume]#[:16]
 
-    clip_point_dict = extra_config['clip-point-vit-l-16-4bit-2nd']
+    clip_point_dict = extra_config['clip-point-deit_base_patch16_224-4bit']
     num_best_dict = {}
     for idx,(layername, abs_max) in enumerate(clip_point_dict.items()):
         model = quant_to(model, layername)
@@ -146,21 +146,21 @@ def easyStatic(model):
         layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max)
         lowest_loss = 100
         abs_max_best = 100
-        for step in [ii for ii in range(0,25)]+[-ii for ii in range(1,25)]:
-            num = step*0.02#abs_max/64/5*(step)
+        for step in [ii for ii in range(0,30)]+[-ii for ii in range(1,30)]:
+            num = step*0.01#abs_max/64/5*(step)
             layer_exists,model = load_static_num(model, layername, num)
             assert layer_exists
             total_loss = inference_all(model, data_loader, hook_layer=layername,scale=num)
-            total_loss = total_loss/dataVolume*16
+            # total_loss = total_loss/dataVolume*16
             if total_loss<lowest_loss:
                 lowest_loss = total_loss
                 num_best = num
             if total_loss<0.0015:
                 break
-        print(f"Determine best num={num_best:.2f} for this layer={layername}")
+        print(f"Determine best num={num_best:.2f} for this layer={layername}, lowest_loss={lowest_loss:.4f}")
         layer_exists,model = load_static_num(model, layername, num_best)
         assert layer_exists
-        print("-"*20+f"[{idx}/{len(clip_point_dict)}] End of layername={layername}, num_best={num_best:.2f}"+"-"*20)
+        print("-"*20+f"[{idx}/{len(clip_point_dict)}] End of layername={layername}, num_best={num_best:.2f}, lowest_loss={lowest_loss:.4f}"+"-"*20)
         num_best_dict[layername]=num_best
     print("num_best_dict=",num_best_dict)
     return model
