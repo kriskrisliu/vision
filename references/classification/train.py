@@ -245,7 +245,7 @@ def main(args):
     # clip_config = extra_config['mb_large_8bit_clip_point']
     # static_config = extra_config['mb_large_8bit_static_large_search_space']
     static_config = extra_config['clip-point-vit-l-16-4bit-static']
-    noise_config = extra_config['clip-point-vit-l-16-4bit-noise-1st-3layers']
+    noise_config = extra_config['clip-point-vit-l-16-4bit-noise-1st-all']
     model = hawq_quant(model,model_name='vit')
     for name,m in model.named_modules():
         # print(name)
@@ -261,7 +261,8 @@ def main(args):
         setattr_depend(m, 'fix_flag', False)
         setattr_depend(m, 'ownname', name)
 
-        setattr_depend(m, 'full_precision_flag', False)##
+        setattr_depend(m, 'full_precision_flag', True)##
+        # setattr_depend(m, 'full_precision_flag', False)##
         setattr_depend(m, 'running_stat', args.running_stat)
 
         if args.use_noise:
@@ -278,7 +279,7 @@ def main(args):
         bitwidth = 4
         setattr_depend(m, 'activation_bit', bitwidth)
         setattr_depend(m, 'weight_bit', bitwidth)
-    print(model)
+    # print(model)
     # raise NotImplementedError
     # print_at_end = True
     print_at_end = False
@@ -399,10 +400,10 @@ def main(args):
         ------------------------------------------"""
         # easyQuant_calibration_data(data_loader)
 
-        model.eval()
+        # model.eval()
         # model_without_ddp = easyQuant(model_without_ddp)
         # model_without_ddp = easyStatic(model_without_ddp)
-        model_without_ddp = easyNoisy(model_without_ddp)
+        # model_without_ddp = easyNoisy(model_without_ddp)
         # raise NotImplementedError
         """------------------------------------------
         Quantization implement with HAWQ repository |
