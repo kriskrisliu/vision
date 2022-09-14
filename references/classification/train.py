@@ -244,7 +244,7 @@ def main(args):
     # from quant_config import extra_config
     from quant_config_deit import extra_config
     clip_config = {}
-    print(extra_config)
+    # print(extra_config)
     clip_config = extra_config['clip-point-deit_base_patch16_224-4bit']
     static_config = extra_config['static-point-deit_base_patch16_224-4bit-2nd-0.01x60']
     noise_config = extra_config['noise-deit_base_patch16_224-4bit-1st']
@@ -285,7 +285,7 @@ def main(args):
     print(model)
     # raise NotImplementedError
     # print_at_end = True
-    print_at_end = True
+    print_at_end = False
     """------------------------------------------
     Quantization implement with HAWQ repository |
     ------------------------------------------"""
