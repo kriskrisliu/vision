@@ -334,8 +334,11 @@ def update_module(model, module_name, new_module):
     super_module, leaf_module = get_module_by_name(model, module_name)
     setattr(super_module, module_name.split('.')[-1], new_module)
 
-def hawq_quant(model,args=None,model_name=None):
+def hawq_quant(model,args=None,model_name=None,noQuant=False):
     print("-"*80)
+    if noQuant:
+        print("[Attention] no quant setattr!")
+        return model
     if model_name=="vit":
         for name,module in model.named_modules():
             if "head" in name:

@@ -221,7 +221,7 @@ def main(args):
         dataset_test, batch_size=args.batch_size, sampler=test_sampler, num_workers=args.workers, pin_memory=True
     )
 
-    print("Creating model")
+    print("Creating model [ResMLP!!]")
     # model = torchvision.models.get_model(args.model, weights=args.weights, num_classes=num_classes)
 
     """------------------------------------------
@@ -230,8 +230,8 @@ def main(args):
     # model = torchvision.models.mobilenet_v3_large(pretrained=True)
     # model = torchvision.models.vit_h_14(weights=torchvision.models.ViT_H_14_Weights.IMAGENET1K_SWAG_LINEAR_V1)
     import timm
-    # model = timm.create_model('vit_base_patch16_224',pretrained=True)
-    model = timm.create_model('deit_base_patch16_224',pretrained=True)
+    # model = timm.create_model('resmlp_24_224',pretrained=True) # fp:79.382
+    model = timm.create_model('q_resmlp',pretrained=True) # fp:79.382
     # for name,pp in model.named_parameters():
     #     print(name)
     # raise NotImplementedError
@@ -245,10 +245,13 @@ def main(args):
     from quant_config_deit import extra_config
     clip_config = {}
     # print(extra_config)
-    clip_config = extra_config['clip-point-deit_base_patch16_224-4bit']
+    # clip_config = extra_config['clip-point-deit_base_patch16_224-4bit']
     static_config = extra_config['static-point-deit_base_patch16_224-4bit-2nd-0.01x60']
     noise_config = extra_config['noise-deit_base_patch16_224-4bit-1st']
-    model = hawq_quant(model,model_name='deit')
+    if args.noQuant:
+        pass
+    else:
+        model = hawq_quant(model,model_name='deit')
     for name,m in model.named_modules():
         # print(name)
         # if name not in clip_config.keys() and f"{name}.Qact" not in clip_config.keys():
@@ -263,7 +266,7 @@ def main(args):
         setattr_depend(m, 'fix_flag', False)
         setattr_depend(m, 'ownname', name)
 
-        setattr_depend(m, 'full_precision_flag', False)##
+        setattr_depend(m, 'full_precision_flag', args.full_precision_flag)##
         setattr_depend(m, 'running_stat', args.running_stat)
 
         if args.use_noise:
@@ -274,14 +277,13 @@ def main(args):
             setattr_depend(m, 'use_static', args.use_static)
             setattr_depend(m, 'static_num', static_config.get(name))
 
-        setattr_depend(m, 'clip_point', clip_config.get(name))
+        if clip_config!={}:
+            setattr_depend(m, 'clip_point', clip_config.get(name))
         # print(name,clip_config.get(name))
 
-        # small 8bit :63.292
-        # small fp: ~67.
-        bitwidth = 4
-        setattr_depend(m, 'activation_bit', bitwidth)
-        setattr_depend(m, 'weight_bit', bitwidth)
+        # bitwidth = 4
+        # setattr_depend(m, 'activation_bit', bitwidth)
+        # setattr_depend(m, 'weight_bit', bitwidth)
     print(model)
     # raise NotImplementedError
     # print_at_end = True
@@ -478,6 +480,9 @@ def get_args_parser(add_help=True):
     parser.add_argument("--running-stat",dest="running_stat",help="",action="store_true",)
     parser.add_argument("--use-static",dest="use_static",help="",action="store_true",)
     parser.add_argument("--easySome",dest="easySome",help="",action="store_true",)
+    parser.add_argument("--full-precision-flag",dest="full_precision_flag",help="",action="store_true",)
+    parser.add_argument("--noQuant",dest="noQuant",help="",action="store_true",)
+
     """------------------------------------------
     Quantization implement with HAWQ repository |
     ------------------------------------------"""
