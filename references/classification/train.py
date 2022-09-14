@@ -252,38 +252,38 @@ def main(args):
         pass
     else:
         model = hawq_quant(model,model_name='deit')
-    for name,m in model.named_modules():
-        # print(name)
-        # if name not in clip_config.keys() and f"{name}.Qact" not in clip_config.keys():
-        #     continue
-        setattr_depend(m, "bias_bit", 32)
-        setattr_depend(m, 'quant_mode', 'symmetric')
-        setattr_depend(m, 'quantize_bias', True)
-        setattr_depend(m, 'per_channel', True)
-        setattr_depend(m, 'act_percentile', 0)
-        setattr_depend(m, 'act_range_momentum', -1)
-        setattr_depend(m, 'weight_percentile', 0)
-        setattr_depend(m, 'fix_flag', False)
-        setattr_depend(m, 'ownname', name)
+        for name,m in model.named_modules():
+            # print(name)
+            # if name not in clip_config.keys() and f"{name}.Qact" not in clip_config.keys():
+            #     continue
+            setattr_depend(m, "bias_bit", 32)
+            setattr_depend(m, 'quant_mode', 'symmetric')
+            setattr_depend(m, 'quantize_bias', True)
+            setattr_depend(m, 'per_channel', True)
+            setattr_depend(m, 'act_percentile', 0)
+            setattr_depend(m, 'act_range_momentum', -1)
+            setattr_depend(m, 'weight_percentile', 0)
+            setattr_depend(m, 'fix_flag', False)
+            setattr_depend(m, 'ownname', name)
 
-        setattr_depend(m, 'full_precision_flag', args.full_precision_flag)##
-        setattr_depend(m, 'running_stat', args.running_stat)
+            setattr_depend(m, 'full_precision_flag', args.full_precision_flag)##
+            setattr_depend(m, 'running_stat', args.running_stat)
 
-        if args.use_noise:
-            setattr_depend(m, 'use_noise', True)
-            setattr_depend(m,"noiseScale",noise_config.get(name,0))
+            if args.use_noise:
+                setattr_depend(m, 'use_noise', True)
+                setattr_depend(m,"noiseScale",noise_config.get(name,0))
 
-        if args.use_static:
-            setattr_depend(m, 'use_static', args.use_static)
-            setattr_depend(m, 'static_num', static_config.get(name))
+            if args.use_static:
+                setattr_depend(m, 'use_static', args.use_static)
+                setattr_depend(m, 'static_num', static_config.get(name))
 
-        if clip_config!={}:
-            setattr_depend(m, 'clip_point', clip_config.get(name))
-        # print(name,clip_config.get(name))
+            if clip_config!={}:
+                setattr_depend(m, 'clip_point', clip_config.get(name))
+            # print(name,clip_config.get(name))
 
-        # bitwidth = 4
-        # setattr_depend(m, 'activation_bit', bitwidth)
-        # setattr_depend(m, 'weight_bit', bitwidth)
+            bitwidth = 4
+            setattr_depend(m, 'activation_bit', bitwidth)
+            setattr_depend(m, 'weight_bit', bitwidth)
     print(model)
     # raise NotImplementedError
     # print_at_end = True
