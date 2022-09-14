@@ -261,16 +261,16 @@ def main(args):
         setattr_depend(m, 'fix_flag', False)
         setattr_depend(m, 'ownname', name)
 
-        setattr_depend(m, 'full_precision_flag', True)##
-        # setattr_depend(m, 'full_precision_flag', False)##
+        # setattr_depend(m, 'full_precision_flag', True)##
+        setattr_depend(m, 'full_precision_flag', False)##
         setattr_depend(m, 'running_stat', args.running_stat)
 
         if args.use_noise:
             setattr_depend(m, 'use_noise', True)
             setattr_depend(m,"noiseScale",noise_config.get(name,0))
-
-        setattr_depend(m, 'use_static', args.use_static)
-        setattr_depend(m, 'static_num', static_config.get(name))
+        if args.use_static:
+            setattr_depend(m, 'use_static', args.use_static)
+            setattr_depend(m, 'static_num', static_config.get(name))
 
         setattr_depend(m, 'clip_point', clip_config.get(name))
         # print(name,clip_config.get(name))
@@ -279,7 +279,7 @@ def main(args):
         bitwidth = 4
         setattr_depend(m, 'activation_bit', bitwidth)
         setattr_depend(m, 'weight_bit', bitwidth)
-    # print(model)
+    print(model)
     # raise NotImplementedError
     # print_at_end = True
     print_at_end = False
