@@ -244,9 +244,10 @@ def main(args):
     # from quant_config import extra_config
     from quant_config_deit import extra_config
     clip_config = {}
+    print(extra_config)
     clip_config = extra_config['clip-point-deit_base_patch16_224-4bit']
-    static_config = extra_config['static-point-deit_base_patch16_224-4bit']
-    # noise_config = extra_config['clip-point-vit-l-16-4bit-noise-1st-3layers']
+    static_config = extra_config['static-point-deit_base_patch16_224-4bit-2nd-0.01x60']
+    noise_config = extra_config['noise-deit_base_patch16_224-4bit-1st']
     model = hawq_quant(model,model_name='deit')
     for name,m in model.named_modules():
         # print(name)
@@ -401,12 +402,12 @@ def main(args):
         Quantization implement with HAWQ repository |
         ------------------------------------------"""
         # easyQuant_calibration_data(data_loader)
-
-        model.eval()
-        # model_without_ddp = easyQuant(model_without_ddp)
-        model_without_ddp = easyStatic(model_without_ddp)
-        # model_without_ddp = easyNoisy(model_without_ddp)
-        # raise NotImplementedError
+        if args.easySome:
+            model.eval()
+            # model_without_ddp = easyQuant(model_without_ddp)
+            # model_without_ddp = easyStatic(model_without_ddp)
+            model_without_ddp = easyNoisy(model_without_ddp)
+            # raise NotImplementedError
         """------------------------------------------
         Quantization implement with HAWQ repository |
         ------------------------------------------"""
@@ -476,6 +477,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--use-noise",dest="use_noise",help="",action="store_true",)
     parser.add_argument("--running-stat",dest="running_stat",help="",action="store_true",)
     parser.add_argument("--use-static",dest="use_static",help="",action="store_true",)
+    parser.add_argument("--easySome",dest="easySome",help="",action="store_true",)
     """------------------------------------------
     Quantization implement with HAWQ repository |
     ------------------------------------------"""

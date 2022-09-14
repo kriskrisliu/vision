@@ -146,6 +146,13 @@ def easyStatic(model):
         layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max)
         lowest_loss = 100
         abs_max_best = 100
+        # if idx<=19:
+        #     num_best = extra_config['static-point-deit_base_patch16_224-4bit-2nd-0.01x60'].get(layername)
+        #     load_static_num(model,layername,num_best)
+        #     num_best_dict[layername]=num_best
+        #     print(f"[idx={idx},name={layername}]")
+        #     continue
+        # print(num_best_dict)
         for step in [ii for ii in range(0,30)]+[-ii for ii in range(1,30)]:
             num = step*0.01#abs_max/64/5*(step)
             layer_exists,model = load_static_num(model, layername, num)
@@ -171,9 +178,10 @@ def easyNoisy(model, args=None):
     data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")
     # data_loader = data_loader[:len(data_loader)//2]
 
-    clip_point_dict = extra_config['clip-point-vit-l-16-4bit-2nd']
+    clip_point_dict = extra_config['clip-point-deit_base_patch16_224-4bit']
     scale_best_dict = {}
     for idx,(layername, abs_max) in enumerate(clip_point_dict.items()):
+
         model = quant_to(model, layername)
         model = noisy_to(model, layername)
         # model = static_to(model, layername)
@@ -181,6 +189,12 @@ def easyNoisy(model, args=None):
         layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max)
         lowest_loss = 100
         abs_max_best = 100
+        # if idx<20:
+        #     scale = extra_config['noise-deit_base_patch16_224-4bit-continue'].get(layername)
+        #     layer_exists,model = load_noisyScale(model, layername, scale)
+        #     scale_best_dict[layername] = scale
+        #     print(layername,scale)
+        #     continue
         for step in [ii*0.01 for ii in range(40)]:
         # for step in [ii*0.01 for ii in range(1)]:
             scale = step#abs_max/64/5*(step)
