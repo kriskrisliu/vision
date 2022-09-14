@@ -8,6 +8,185 @@ import torch.multiprocessing as mp
 from torch.nn import Module, Parameter
 from .quant_utils import *
 
+class QuantLinear_lyj(Module):
+    """
+    Class to quantize weights of given linear layer
+
+    Parameters:
+    ----------
+    weight_bit : int, default 4
+        Bitwidth for quantized weights.
+    bias_bit : int, default None
+        Bitwidth for quantized bias.
+    full_precision_flag : bool, default False
+        If True, use fp32 and skip quantization
+    quant_mode : 'symmetric' or 'asymmetric', default 'symmetric'
+        The mode for quantization.
+    per_channel : bool, default False
+        Whether to use channel-wise quantization.
+    fix_flag : bool, default False
+        Whether the module is in fixed mode or not.
+    weight_percentile : float, default 0
+        The percentile to setup quantization range, 0 means no use of percentile, 99.9 means to cut off 0.1%.
+    """
+
+    def __init__(self,
+                 weight_bit=4,
+                 bias_bit=None,
+                 full_precision_flag=False,
+                 quant_mode='symmetric',
+                 per_channel=False,
+                 fix_flag=False,
+                 weight_percentile=0,
+                 ):
+        super(QuantLinear, self).__init__()
+        self.full_precision_flag = full_precision_flag
+        self.weight_bit = weight_bit
+        self.quant_mode = quant_mode
+        self.per_channel = per_channel
+        self.fix_flag = fix_flag
+        self.weight_percentile = weight_percentile
+        self.bias_bit = bias_bit
+        self.quantize_bias = (False if bias_bit is None else True)
+        self.quant_mode = quant_mode
+        self.counter = 0
+        self.Qact = QuantAct(fixed_point_quantization=True).to(device='cuda')
+        self.ownname=None
+        self.use_noise=False
+        self.noiseScale = 0
+        self.output_layer=False
+        self.clip_point = 1000
+        self.use_static = False
+        self.static_num = 0
+
+    def __repr__(self):
+        s = super(QuantLinear, self).__repr__()
+        s = "(" + s + " weight_bit={}, full_precision_flag={}, quantize_fn={})".format(
+            self.weight_bit, self.full_precision_flag, self.quant_mode)
+        s += " use_noise={}, noiseScale={:.3f}, clip_point={:.3f},".format(self.use_noise,
+            self.noiseScale,self.clip_point)
+        s += f" use_static={self.use_static}, static_num={self.static_num:.3f}"
+        return s
+
+    def set_param(self, linear):
+        self.in_features = linear.in_features
+        self.out_features = linear.out_features
+        self.weight = Parameter(linear.weight.data.clone())
+        self.register_buffer('fc_scaling_factor', torch.zeros(self.out_features,dtype=self.weight.dtype))
+        self.register_buffer('weight_integer', torch.zeros_like(self.weight,dtype=self.weight.dtype))
+        self.register_buffer('bias_integer', torch.zeros_like(linear.bias,dtype=self.weight.dtype))
+        self.noise = torch.rand(size=(1,1,self.weight.data.size(-1)))
+        self.noise = (self.noise-0.5)*2
+        self.noise = self.noise.cuda()
+        try:
+            self.bias = Parameter(linear.bias.data.clone())
+        except AttributeError:
+            self.bias = None
+
+    def fix(self):
+        self.fix_flag = True
+
+    def unfix(self):
+        self.fix_flag = False
+
+    def forward(self, x, prev_act_scaling_factor=None):
+        """
+        using quantized weights to forward activation x
+        """
+        if type(x) is tuple:
+            prev_act_scaling_factor = x[1]
+            x = x[0]
+
+        if self.quant_mode == "symmetric":
+            self.weight_function = SymmetricQuantFunction.apply
+        elif self.quant_mode == "asymmetric":
+            self.weight_function = AsymmetricQuantFunction.apply
+        else:
+            raise ValueError("unknown quant mode: {}".format(self.quant_mode))
+
+        w = self.weight
+        w_transform = w.data.detach()
+        # calculate the quantization range of weights and bias
+        if self.per_channel:
+            # w_transform = scaled_weight.data.contiguous().view(self.conv.out_channels, -1)
+            if self.weight_percentile == 0:
+                # w_min = w_transform.min(dim=1).values
+                # w_max = w_transform.max(dim=1).values
+                w_min, _ = torch.min(w_transform, dim=1, out=None)
+                w_max, _ = torch.max(w_transform, dim=1, out=None)
+                if self.quantize_bias:
+                    b_min = self.bias.data
+                    b_max = self.bias.data
+            else:
+                lower_percentile = 100 - self.weight_percentile
+                upper_percentile = self.weight_percentile
+                input_length = w_transform.shape[1]
+
+                lower_index = math.ceil(input_length * lower_percentile * 0.01)
+                upper_index = math.ceil(input_length * upper_percentile * 0.01)
+
+                w_min = torch.kthvalue(w_transform, k=lower_index, dim=1).values
+                w_max = torch.kthvalue(w_transform, k=upper_index, dim=1).values
+        else:
+            if self.weight_percentile == 0:
+                # w_min = scaled_weight.data.min()
+                # w_max = scaled_weight.data.max()
+                w_min = w_transform.min().expand(1)
+                w_max = w_transform.max().expand(1)
+                if self.quantize_bias:
+                    b_min = self.bias.data.min()
+                    b_max = self.bias.data.max()
+            else:
+                # w_min, w_max = get_percentile_min_max(scaled_weight.view(-1), 100 - self.weight_percentile,
+                #                                       self.weight_percentile, output_tensor=True)
+                w_min, w_max = get_percentile_min_max(w_transform.view(-1), 100 - self.weight_percentile,
+                                                      self.weight_percentile, output_tensor=True)
+
+        # perform the quantization
+        if not self.full_precision_flag:
+            if self.quant_mode == 'symmetric':
+                self.fc_scaling_factor = symmetric_linear_quantization_params(self.weight_bit, w_min, w_max,
+                                                                              self.per_channel)
+                self.weight_integer = self.weight_function(self.weight, self.weight_bit, self.fc_scaling_factor)
+
+                # bias_scaling_factor = self.fc_scaling_factor.view(1, -1) * prev_act_scaling_factor.view(1, -1)
+                bias_scaling_factor = self.fc_scaling_factor.view(1, -1)
+                self.bias_integer = self.weight_function(self.bias, self.bias_bit, bias_scaling_factor)
+            else:
+                raise Exception('For weight, we only support symmetric quantization.')
+        else:
+            w = self.weight
+            b = self.bias
+            return F.linear(x, weight=w, bias=b)
+
+        x = torch.clamp(x,-self.clip_point,self.clip_point)
+        if self.use_noise:
+            noise = self.noise*(self.noiseScale)
+            x = x+noise
+            # denoise = F.linear(noise, weight=self.weight_integer*self.fc_scaling_factor.view(-1,1))
+            # print(torch.sum(noise.abs()))
+            # print(torch.sum(denoise.abs()))
+        if self.use_static:
+            x = x+self.static_num
+        # x = x-0.05
+        xq, act_scaling_factor = self.Qact(x,clip_point=self.clip_point)
+        # xq = xq+0.05
+        if self.use_static:
+            x = x-self.static_num
+
+        correct_output_scale = bias_scaling_factor[0].view(1, -1)
+        if self.use_noise:
+            xq = xq-noise
+        output = (F.linear(xq, weight=self.weight_integer, bias=self.bias_integer) * correct_output_scale )
+
+        # if self.ownname=="head":
+        #     print(xq.shape)
+        #     print(self.weight.shape)
+        #     print(output.shape)
+        if self.output_layer:
+            output = torch.squeeze(output)
+        return output
+
 
 class QuantLinear(Module):
     """
@@ -142,6 +321,7 @@ class QuantLinear(Module):
         if not self.full_precision_flag:
             return ste_round.apply(
                 F.linear(x_int, weight=self.weight_integer, bias=self.bias_integer)) * correct_output_scale, self.fc_scaling_factor
+            # return F.linear(x_int, weight=self.weight_integer, bias=self.bias_integer) * correct_output_scale, self.fc_scaling_factor
         else:
             return F.linear(x, weight=self.weight, bias=self.bias) * correct_output_scale, self.fc_scaling_factor
 
@@ -312,7 +492,7 @@ class QuantAct(Module):
                     self.activation_bit, self.x_min, self.x_max, True)
                 # print(self.act_scaling_factor,self.act_zero_point)
                 quant_act_x = self.act_function(x, self.activation_bit, self.act_scaling_factor,self.act_zero_point)
-                return (quant_act_x, self.act_scaling_factor)                
+                return (quant_act_x, self.act_scaling_factor)
             if (pre_act_scaling_factor is None) or (self.fixed_point_quantization == True):
                 # this is for the case of input quantization,
                 # or the case using fixed-point rather than integer-only quantization
@@ -812,7 +992,7 @@ class QuantAffine(nn.Module):
         self.weight_percentile = weight_percentile
         self.bias_bit = bias_bit
         self.quantize_bias = (False if bias_bit is None else True)
-                
+
         self.register_buffer('alpha_scaling_factor',torch.tensor(0.))
         self.register_buffer('alpha_integer', torch.zeros_like(self.alpha, dtype=torch.int8))
         self.register_buffer('beta_integer', torch.zeros_like(self.alpha, dtype=torch.int8))
@@ -823,7 +1003,7 @@ class QuantAffine(nn.Module):
                                                                                       self.full_precision_flag,
                                                                                       self.quant_mode)
         return s
-    
+
     def set_ls(self, aff):
         self.alpha = Parameter(aff.data.clone())
         self.beta = Parameter(torch.zeros_like(self.alpha))
@@ -883,7 +1063,7 @@ class QuantAffine(nn.Module):
 
         # print(correct_output_scale.shape,torch.addcmul(self.beta_integer, self.alpha_integer, x_int).shape)
         # print("======================")
-        
+
         return (torch.addcmul(self.beta_integer, self.alpha_integer, x_int) * correct_output_scale,self.alpha_scaling_factor)
 
 def freeze_model(model):

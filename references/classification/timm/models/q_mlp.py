@@ -236,6 +236,11 @@ class q_ResBlock(nn.Module):
         self.actr=[]
         self.actr_aft=[]
 
+    def __repr__(self):
+        s = super(q_ResBlock, self).__repr__()
+        s = "(" + s + " setnorm={})".format(self.setnorm)
+        return s
+
     def set_param(self, unit):
         if self.setnorm:
             self.norm1.set_param(unit.norm1)
