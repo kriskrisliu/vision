@@ -50,7 +50,10 @@ def hook(module, input, output):
     feats = {"input":input[0], "output":output}
     return
 
-def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=False):
+import random
+def inference_all(model, data_loader, hook_layer=None,scale=None,
+                infer_only=False, calcmean=False,calcActMean=False,desc='Calibration',
+                lossFun="mse", toTrain=False,optimizer=None):
     if hook_layer is None:
         hook_layer = 'visual.transformer.resblocks.0.attn.quant_in_proj'
     global feats
@@ -63,42 +66,76 @@ def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=Fal
             if isinstance(m,QuantConv2d):
                 isconv = True
                 stride, padding, dilation, groups = (m.conv.stride, m.conv.padding,m.conv.dilation, m.conv.groups)
-    criterion = torch.nn.MSELoss()
-    with torch.no_grad():
-        top1, top5, n = 0., 0., 0.
-        total_loss = 0
-        for i, (images, target) in enumerate(tqdm(data_loader,desc='Calibration:',disable=False)):
-        # for i, (images, target) in enumerate(data_loader):
+    if lossFun=="mse":
+        criterion = torch.nn.MSELoss()
+    else:
+        raise NotImplementedError
+    if toTrain:
+        loss_one_epoch = 0
+        random.shuffle(data_loader)
+        # new_data_loader = []
+        # for batch_im,batch_tar in data_loader:
+        #     for ii in range(32):
+        #         new_data_loader += [(batch_im[ii:ii+1,:,:,:], batch_tar[ii:ii+1])]
+        # random.shuffle(new_data_loader)
+        # data_loader = []
+        # for im,tar in new_data_loader:
+        #     batch_im = []
+        #     for ii in range(32):
+        #         batch_im += [n]
+        # print(type(data_loader[0][0]), data_loader[0][0].shape)
+        for i, (images, target) in enumerate(tqdm(data_loader,desc=desc,disable=False)):
             images = images.cuda()
             target = target.cuda()
-            # predict
+            optimizer.zero_grad()
             output = model(images)
-            # measure accuracy
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
-            top1 += acc1
-            top5 += acc5
-            n += images.size(0)
-            # calc loss
-            if infer_only:
-                loss=0
-            else:
-                if isconv:
-                    fpoutput = F.conv2d(feats["input"], weight, bias, stride, padding, dilation, groups)
-                else:
-                    fpoutput = F.linear(feats["input"],weight,bias)
-                loss = criterion(fpoutput,feats['output'])
-            total_loss += loss
-    top1 = (top1 / n) * 100
-    top5 = (top5 / n) * 100
-
-    if infer_only:
-        print(f"Top-1 accuracy: {top1:.2f}")
+            fpoutput = F.linear(feats["input"],weight,bias)
+            loss = criterion(fpoutput, feats['output'])
+            loss_one_epoch += loss
+            # print("loss=",loss)
+            loss.backward()
+            # for name,pp in model.named_parameters():
+            #     if pp.requires_grad:
+            #         print("grad:",pp.grad.data)
+            optimizer.step()
+        # raise NotImplementedError
+        return loss_one_epoch#/len(data_loader)
     else:
-        print(f"Top-1 accuracy: {top1:.2f}, total_loss={total_loss:.4f}, scale={scale}")
-        hh.remove()
-        # print(model)
-    # print(f"Top-5 accuracy: {top5:.2f}")
-    return total_loss
+        with torch.no_grad():
+            top1, top5, n = 0., 0., 0.
+            total_loss = 0
+            for i, (images, target) in enumerate(tqdm(data_loader,desc='Calibration:',disable=False)):
+            # for i, (images, target) in enumerate(data_loader):
+                images = images.cuda()
+                target = target.cuda()
+                # predict
+                output = model(images)
+                # measure accuracy
+                acc1, acc5 = accuracy(output, target, topk=(1, 5))
+                top1 += acc1
+                top5 += acc5
+                n += images.size(0)
+                # calc loss
+                if infer_only:
+                    loss=0
+                else:
+                    if isconv:
+                        fpoutput = F.conv2d(feats["input"], weight, bias, stride, padding, dilation, groups)
+                    else:
+                        fpoutput = F.linear(feats["input"],weight,bias)
+                    loss = criterion(fpoutput,feats['output'])
+                total_loss += loss
+        top1 = (top1 / n) * 100
+        top5 = (top5 / n) * 100
+
+        if infer_only:
+            print(f"Top-1 accuracy: {top1:.2f}")
+        else:
+            print(f"Top-1 accuracy: {top1:.2f}, total_loss={total_loss:.4f}, scale={scale}")
+            hh.remove()
+            # print(model)
+        # print(f"Top-5 accuracy: {top5:.2f}")
+        return total_loss
 
 def noisy_to(model, layername):
     for name,mm in model.named_modules():
@@ -217,6 +254,53 @@ def easyNoisy(model, args=None):
         print("-"*20+f"[{idx}/{len(clip_point_dict)}] End of layername={layername}, scale_best={scale_best:.4f}"+"-"*20)
         scale_best_dict[layername]=scale_best
     print("scale_best_dict=",scale_best_dict)
+    return
+
+def freeze_model(model):
+    for nn,pp in model.named_parameters():
+        pp.requires_grad_(False)
+    return model
+
+def open_grad_at(model, layername):
+    layer_exists = False
+    for name,pp in model.named_parameters():
+        if name==f"{layername}.noiseScale":
+            pp.requires_grad_(True)
+            layer_exists = True
+            break
+    return layer_exists
+
+from torch import optim
+def easyNoisyLearn(model, args=None):
+    model.eval()
+    print("start learning for noisy scale!")
+    clean_model(model)
+    data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")
+    clip_point_dict = extra_config['clip-point-deit_base_patch16_224-4bit']
+    scale_best_dict = {}
+    for idx,(layername, abs_max) in enumerate(clip_point_dict.items()):
+        model = quant_to(model, layername)
+        model = noisy_to(model, layername)
+        model = freeze_model(model)
+        layer_exists = open_grad_at(model, layername)
+        assert layer_exists, layername
+        optimizer = optim.SGD(model.parameters(), lr=1000000, momentum=0.9)
+
+        for name,pp in model.named_parameters():
+            if pp.requires_grad:
+                print(name,pp.requires_grad)
+        # raise NotImplementedError
+
+        for epoch in range(150):
+            loss_one_epoch = inference_all(model, data_loader, hook_layer=layername,
+                            scale=None,lossFun='mse',toTrain=True,optimizer=optimizer, desc="learnNoise")
+            print(f"[{epoch+1}/{15}]loss_one_epoch={loss_one_epoch}")
+            for name,pp in model.named_parameters():
+                if pp.requires_grad:
+                    print(name,pp)
+        inference_all(model, data_loader, hook_layer=layername,
+                        scale=None,lossFun='mse',toTrain=False, desc="inference")
+        print("-"*80)
     return
 
 # easyQuant text encoder

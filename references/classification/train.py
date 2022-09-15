@@ -223,25 +223,17 @@ def main(args):
 
     print("Creating model")
     # model = torchvision.models.get_model(args.model, weights=args.weights, num_classes=num_classes)
-
     """------------------------------------------
     Quantization implement with HAWQ repository |
     ------------------------------------------"""
+
+
+
     # model = torchvision.models.mobilenet_v3_large(pretrained=True)
     # model = torchvision.models.vit_h_14(weights=torchvision.models.ViT_H_14_Weights.IMAGENET1K_SWAG_LINEAR_V1)
     import timm
     # model = timm.create_model('vit_base_patch16_224',pretrained=True)
     model = timm.create_model('deit_base_patch16_224',pretrained=True)
-    # for name,pp in model.named_parameters():
-    #     print(name)
-    # raise NotImplementedError
-    # for name,mm in model.named_modules():
-    #     print(name)
-    # print("-"*80)
-    # print(model)
-    # print("-"*80)
-    # raise NotImplementedError
-    # from quant_config import extra_config
     from quant_config_deit import extra_config
     clip_config = {}
     # print(extra_config)
@@ -286,6 +278,10 @@ def main(args):
     # raise NotImplementedError
     # print_at_end = True
     print_at_end = False
+
+
+
+
     """------------------------------------------
     Quantization implement with HAWQ repository |
     ------------------------------------------"""
@@ -401,13 +397,23 @@ def main(args):
         """------------------------------------------
         Quantization implement with HAWQ repository |
         ------------------------------------------"""
+
+
+
+
+
         # easyQuant_calibration_data(data_loader)
         if args.easySome:
             model.eval()
             # model_without_ddp = easyQuant(model_without_ddp)
             # model_without_ddp = easyStatic(model_without_ddp)
-            model_without_ddp = easyNoisy(model_without_ddp)
+            model_without_ddp = easyNoisyLearn(model_without_ddp)
             # raise NotImplementedError
+
+
+
+
+
         """------------------------------------------
         Quantization implement with HAWQ repository |
         ------------------------------------------"""

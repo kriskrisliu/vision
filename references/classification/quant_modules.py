@@ -104,18 +104,23 @@ class QuantLinear(Module):
         self.Qact = QuantAct(fixed_point_quantization=True).to(device='cuda')
         self.ownname=None
         self.use_noise=False
-        self.noiseScale = 0
+        # self.noiseScale = 0
+        self.register_parameter("noiseScale", Parameter(torch.zeros(1).cuda(),requires_grad=True))
         self.output_layer=False
         self.clip_point = 1000
         self.use_static = False
         self.static_num = 0
+
+    def set_saved_noise(self,noise):
+        self.noise = noise
+        self.noise = self.noise.cuda()
 
     def __repr__(self):
         s = super(QuantLinear, self).__repr__()
         s = "(" + s + " weight_bit={}, full_precision_flag={}, quantize_fn={})".format(
             self.weight_bit, self.full_precision_flag, self.quant_mode)
         s += " use_noise={}, noiseScale={:.3f}, clip_point={:.3f},".format(self.use_noise,
-            self.noiseScale,self.clip_point)
+            self.noiseScale.data[0],self.clip_point)
         s += f" use_static={self.use_static}, static_num={self.static_num:.3f}"
         return s
 
@@ -393,7 +398,10 @@ class QuantAct(Module):
             if (pre_act_scaling_factor is None) or (self.fixed_point_quantization == True):
                 # this is for the case of input quantization,
                 # or the case using fixed-point rather than integer-only quantization
-                quant_act_int = self.act_function(x, self.activation_bit, self.act_scaling_factor)
+                # quant_act_int = self.act_function(x, self.activation_bit, self.act_scaling_factor)
+                """quick quantization for bp"""
+                n = 2**(self.activation_bit-1)
+                quant_act_int = torch.clamp(ste_round.apply(x/self.act_scaling_factor), -n, n-1)
             elif type(pre_act_scaling_factor) is list:
                 # this is for the case of multi-branch quantization
                 branch_num = len(pre_act_scaling_factor)
