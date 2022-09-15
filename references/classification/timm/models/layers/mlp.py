@@ -15,7 +15,6 @@ class Mlp(nn.Module):
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         drop_probs = to_2tuple(drop)
-
         self.fc1 = nn.Linear(in_features, hidden_features)
         self.act = act_layer()
         self.drop1 = nn.Dropout(drop_probs[0])

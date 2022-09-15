@@ -319,9 +319,12 @@ class QuantLinear(Module):
         correct_output_scale = bias_scaling_factor[0].view(1, -1)
 
         if not self.full_precision_flag:
-            return ste_round.apply(
-                F.linear(x_int, weight=self.weight_integer, bias=self.bias_integer)) * correct_output_scale, self.fc_scaling_factor
-            # return F.linear(x_int, weight=self.weight_integer, bias=self.bias_integer) * correct_output_scale, self.fc_scaling_factor
+            # print(self.fc_scaling_factor.shape)
+            # print(self.weight_integer.shape)
+            # return ste_round.apply(
+            #     F.linear(x_int, weight=self.weight_integer, bias=self.bias_integer)) * correct_output_scale, self.fc_scaling_factor
+            return (F.linear(x, weight=self.weight_integer*self.fc_scaling_factor.view(-1,1), bias=self.bias),
+                self.fc_scaling_factor)
         else:
             return F.linear(x, weight=self.weight, bias=self.bias) * correct_output_scale, self.fc_scaling_factor
 
