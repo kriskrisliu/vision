@@ -286,8 +286,8 @@ def main(args):
             setattr_depend(m, 'weight_bit', bitwidth)
     print(model)
     # raise NotImplementedError
-    # print_at_end = True
-    print_at_end = False
+    print_at_end = True
+    # print_at_end = False
     """------------------------------------------
     Quantization implement with HAWQ repository |
     ------------------------------------------"""
@@ -406,6 +406,9 @@ def main(args):
         # easyQuant_calibration_data(data_loader)
         if args.easySome:
             model.eval()
+            # for n,m in model.named_modules():
+            #     print(n,(hasattr(m,"noiseScale") or hasattr(m,'noiseScale_token') or hasattr(m,'noiseScale_channel')))
+            # import pdb; pdb.set_trace()
             # model_without_ddp = easyQuant(model_without_ddp)
             # model_without_ddp = easyStatic(model_without_ddp)
             model_without_ddp = easyNoisy(model_without_ddp)

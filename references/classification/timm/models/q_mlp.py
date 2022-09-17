@@ -75,6 +75,10 @@ class q_Mlp(nn.Module):
         self.fc2 = QuantLinear()
         self.fc2.set_param(nn.Linear(hidden_features, in_features))
 
+        self.use_noise = False
+        self.register_buffer('noise_hidden_feat', 2*torch.rand(size=(hidden_features,))-1)
+        self.register_buffer('noiseScale',torch.tensor([0.05]))
+
     def set_param(self, unit):
         unit.fc1.in_features = self.out_features
         unit.fc1.out_features = self.hidden_features
@@ -85,13 +89,17 @@ class q_Mlp(nn.Module):
         self.fc1.set_param(unit.fc1)
         self.fc2.set_param(unit.fc2)
 
-
-    def forward(self, x,prev_act_scaling_factor):
-        x, fc_scaling_factor = self.fc1(x, prev_act_scaling_factor)
+    def forward(self, x,prev_act_scaling_factor,noise=None):
+        # import pdb; pdb.set_trace()
+        x, fc_scaling_factor = self.fc1(x, prev_act_scaling_factor,noise=noise)
         x, act_scaling_factor = self.quant_fc(x,prev_act_scaling_factor,fc_scaling_factor)
         x = self.act(x)
+
+        if not self.use_noise:
+            self.noiseScale = torch.tensor([0.]).type_as(self.noiseScale)
+        x = x+self.noise_hidden_feat.view(1,1,-1)*self.noiseScale
         x, act_scaling_factor = self.quant_act(x)
-        x, fc_scaling_factor = self.fc2(x, act_scaling_factor)
+        x, fc_scaling_factor = self.fc2(x, act_scaling_factor,noise=self.noise_hidden_feat*self.noiseScale)
 
         return x, act_scaling_factor, fc_scaling_factor
 
@@ -235,6 +243,12 @@ class q_ResBlock(nn.Module):
         self.minmax=True
         self.actr=[]
         self.actr_aft=[]
+        self.use_noise_token=False
+        self.use_noise_channel=False
+        self.register_buffer('noise_token', 2*torch.rand(size=(seq_len,))-1)
+        self.register_buffer('noiseScale_token',torch.tensor([0.05]))
+        self.register_buffer('noise_channel', 2*torch.rand(size=(dim,))-1)
+        self.register_buffer('noiseScale_channel',torch.tensor([0.05]))
 
     def __repr__(self):
         s = super(q_ResBlock, self).__repr__()
@@ -262,9 +276,14 @@ class q_ResBlock(nn.Module):
             x, act_scaling_factor = self.quant_norm1(x,scaling_factor_int32,norm_scaling_factor)
         else:
             x= self.norm1(x)
+            if not self.use_noise_token:
+                self.noiseScale_token = torch.tensor([0.]).type_as(self.noiseScale_token)
+            noise = self.noise_token*self.noiseScale_token
+            x = x+noise.view(1,-1,1)
+            # noise=None
             x, act_scaling_factor = self.quant_norm1(x)
 
-        x, fc_scaling_factor= self.linear_tokens(x.transpose(1, 2),act_scaling_factor)
+        x, fc_scaling_factor= self.linear_tokens(x.transpose(1, 2),act_scaling_factor,noise=noise)
         x=x.transpose(1, 2)
         x, norm_scaling_factor= self.ls1(x,act_scaling_factor)
         x = x + identity
@@ -272,12 +291,17 @@ class q_ResBlock(nn.Module):
 
         identity=x
         if self.setnorm:
+            raise NotImplementedError
             x, norm_scaling_factor= self.norm2(x,scaling_factor_int32)
             x, act_scaling_factor = self.quant_norm2(x,scaling_factor_int32,norm_scaling_factor)
         else:
             x= self.norm2(x)
+            if not self.use_noise_channel:
+                self.noiseScale_channel = torch.tensor([0.]).type_as(self.noiseScale_channel)
+            noise = self.noise_channel*self.noiseScale_channel
+            x = x+noise.view(1,1,-1)
             x, act_scaling_factor = self.quant_norm2(x)
-        x, act_scaling_factor, fc_scaling_factor= self.mlp_channels(x,act_scaling_factor)
+        x, act_scaling_factor, fc_scaling_factor= self.mlp_channels(x,act_scaling_factor,noise)
         x, norm_scaling_factor= self.ls2(x,act_scaling_factor)
         x = x + identity
         x, scaling_factor_int32 = self.quant_act_int32_channels(x)
@@ -613,8 +637,10 @@ def q_resmlp(pretrained=False,model=None, **kwargs):
         block_layer=partial(q_ResBlock, init_values=1e-5), norm_layer=Affine, **kwargs)
     model = _create_qmlp('resmlp_24_224', pretrained=False, **model_args)
 
-    bit_config=bit_config_dict["q_resmlp_uniform8"]
+    bit_config=bit_config_dict["q_resmlp_a6w8"]
+    # bit_config=bit_config_dict["q_resmlp_uniform16"]
     for name, m in model.named_modules():
+        setattr(m, 'ownname', name)
         if name in bit_config.keys():
             setattr(m, 'quant_mode', 'symmetric')
             setattr(m, 'bias_bit', 32)

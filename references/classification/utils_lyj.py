@@ -5,7 +5,7 @@ from q_transformer import *
 import torch
 from tqdm import tqdm
 
-from quant_config_deit import extra_config
+from timm.models.bit_config import bit_config_dict as extra_config
 
 # # Zero-shot prediction
 def accuracy(output, target, topk=(1,)):
@@ -23,7 +23,7 @@ def quant_to(model, layername):
     for name, mm in model.named_modules():
         if hasattr(mm, "full_precision_flag"):
             setattr(mm, "full_precision_flag", full_precision_flag)
-        if name==layername+".Qact":
+        if name==layername:
             full_precision_flag = True
     return model
 
@@ -43,26 +43,58 @@ def load_clamp_scheme(model, layername, clip_point):
             break
     return layer_exists
 
-feats = 0
+feats = {}
 def hook(module, input, output):
     global feats
     # print(type(input),type(output))
-    feats = {"input":input[0], "output":output}
+    feats[module.ownname] = {"input":None, "output":output}
     return
 
 def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=False):
     if hook_layer is None:
         hook_layer = 'visual.transformer.resblocks.0.attn.quant_in_proj'
     global feats
+    hh = []
+
+    if hook_layer.endswith('linear_tokens'):
+        fpact_name,fplinear_name = (".norm1",'linear_tokens')
+    elif hook_layer.endswith('.fc1'):
+        fpact_name,fplinear_name = (".norm2",'mlp_channels.')
+    elif hook_layer.endswith('.fc2'):
+        fpact_name,fplinear_name = (".act",'mlp_channels.')
+    else:
+        raise NotImplementedError
     for n,m in model.named_modules():
+        if n.endswith(fpact_name) and n.startswith(hook_layer.split(fplinear_name)[0]):
+            _ = m.register_forward_hook(hook) # need output: fp input without noise
+            hh += [_]
         if n==hook_layer:
-            isconv = False
-            hh = m.register_forward_hook(hook)
+            _ = m.register_forward_hook(hook) # need output: quant(input + noise) @ w +b
+            hh += [_]
             weight = getattr(m, "weight")
             bias = getattr(m, "bias")
-            if isinstance(m,QuantConv2d):
-                isconv = True
-                stride, padding, dilation, groups = (m.conv.stride, m.conv.padding,m.conv.dilation, m.conv.groups)
+
+    # if hook_layer.endswith('linear_tokens'):
+    #     for n,m in model.named_modules():
+    #         if n.endswith(".norm1") and n.startswith(hook_layer.split('linear_tokens')[0]):
+    #             _ = m.register_forward_hook(hook) # need output: fp input without noise
+    #             hh += [_]
+    #         if n==hook_layer:
+    #             _ = m.register_forward_hook(hook) # need output: quant(input + noise) @ w +b
+    #             hh += [_]
+    #             weight = getattr(m, "weight")
+    #             bias = getattr(m, "bias")
+    # elif hook_layer.endswith('.fc1'):
+    #     for n,m in model.named_modules():
+    #         if n.endswith(".norm2") and n.startswith(hook_layer.split('mlp_channels')[0]):
+    #             _ = m.register_forward_hook(hook) # need output: fp input without noise
+    #             hh += [_]
+    #         if n==hook_layer:
+    #             _ = m.register_forward_hook(hook) # need output: quant(input + noise) @ w +b
+    #             hh += [_]
+    #             weight = getattr(m, "weight")
+    #             bias = getattr(m, "bias")
+
     criterion = torch.nn.MSELoss()
     with torch.no_grad():
         top1, top5, n = 0., 0., 0.
@@ -79,14 +111,20 @@ def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=Fal
             top5 += acc5
             n += images.size(0)
             # calc loss
+
             if infer_only:
                 loss=0
             else:
-                if isconv:
-                    fpoutput = F.conv2d(feats["input"], weight, bias, stride, padding, dilation, groups)
+                if hook_layer.endswith('linear_tokens'):
+                    fpinput = feats[hook_layer.replace("linear_tokens",'norm1')]['output'].transpose(1, 2)
+                elif hook_layer.endswith('.fc1'):
+                    fpinput = feats[hook_layer.replace("mlp_channels.fc1",'norm2')]['output']
+                elif hook_layer.endswith('.fc2'):
+                    fpinput = feats[hook_layer.replace("fc2",'act')]['output']
                 else:
-                    fpoutput = F.linear(feats["input"],weight,bias)
-                loss = criterion(fpoutput,feats['output'])
+                    raise NotImplementedError
+                fpoutput = F.linear(fpinput,weight,bias)
+                loss = criterion(fpoutput,feats[hook_layer]["output"][0])
             total_loss += loss
     top1 = (top1 / n) * 100
     top5 = (top5 / n) * 100
@@ -95,23 +133,48 @@ def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=Fal
         print(f"Top-1 accuracy: {top1:.2f}")
     else:
         print(f"Top-1 accuracy: {top1:.2f}, total_loss={total_loss:.4f}, scale={scale}")
-        hh.remove()
+        for _ in hh:
+            _.remove()
+        feats={}
         # print(model)
     # print(f"Top-5 accuracy: {top5:.2f}")
     return total_loss
 
 def noisy_to(model, layername):
+    raise NotImplementedError
     for name,mm in model.named_modules():
+        if hasattr(mm,'use_noise'):
+            setattr(mm,'use_noise',True)
+        if hasattr(mm,'use_noise_token'):
+            setattr(mm,'use_noise_token',True)
+        if hasattr(mm,'use_noise_channel'):
+            setattr(mm,'use_noise_channel',True)
         if name == layername:
-            setattr(mm, "use_noise", True)
             break
     return model
 def load_noisyScale(model,layername,scale):
     layer_exists = False
-    for name,mm in model.named_modules():
-        if name == layername:
-            setattr(mm, "noiseScale", scale)
-            layer_exists = True
+    if layername.endswith("linear_tokens"):
+        for name,mm in model.named_modules():
+            if name==layername.split('.linear_tokens')[0]:
+                setattr(mm,'noiseScale_token',torch.tensor([scale]).cuda())
+                setattr(mm,'use_noise_token',True)
+                layer_exists = True
+                break
+    if layername.endswith("fc1"):
+        for name,mm in model.named_modules():
+            if name==layername.split('.mlp_channels')[0]:
+                setattr(mm,'noiseScale_channel',torch.tensor([scale]).cuda())
+                setattr(mm,'use_noise_channel',True)
+                layer_exists = True
+                break
+    if layername.endswith("fc2"):
+        for name,mm in model.named_modules():
+            if name==layername.split('.fc2')[0]:
+                setattr(mm,'noiseScale',torch.tensor([scale]).cuda())
+                setattr(mm,'use_noise',True)
+                layer_exists = True
+                break
     return layer_exists, model
 def clean_model(model):
     for name,mm in model.named_modules():
@@ -178,23 +241,19 @@ def easyNoisy(model, args=None):
     data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")
     # data_loader = data_loader[:len(data_loader)//2]
 
-    clip_point_dict = extra_config['clip-point-deit_base_patch16_224-4bit']
+    focus_on_names = []
+    for name,mm in model.named_modules():
+        if name.endswith('linear_tokens') or name.endswith('fc1') or name.endswith('fc2'):
+            focus_on_names += [name]
+    # raise NotImplementedError
+    # clip_point_dict = extra_config['q_resmlp_a6w8']
     scale_best_dict = {}
-    for idx,(layername, abs_max) in enumerate(clip_point_dict.items()):
-
+    for idx, layername in enumerate(focus_on_names):
         model = quant_to(model, layername)
-        model = noisy_to(model, layername)
+        # model = noisy_to(model, layername)
         # model = static_to(model, layername)
-        # layer_exists,model = load_static_num(model, layername, num)
-        layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max)
         lowest_loss = 100
         abs_max_best = 100
-        # if idx<20:
-        #     scale = extra_config['noise-deit_base_patch16_224-4bit-continue'].get(layername)
-        #     layer_exists,model = load_noisyScale(model, layername, scale)
-        #     scale_best_dict[layername] = scale
-        #     print(layername,scale)
-        #     continue
         for step in [ii*0.01 for ii in range(40)]:
         # for step in [ii*0.01 for ii in range(1)]:
             scale = step#abs_max/64/5*(step)
@@ -202,6 +261,7 @@ def easyNoisy(model, args=None):
             layer_exists,model = load_noisyScale(model, layername, scale)
             # print(model)
             assert layer_exists
+
             total_loss = inference_all(model, data_loader, hook_layer=layername,scale=scale)
             # print(model)
             # raise NotImplementedError
@@ -211,10 +271,10 @@ def easyNoisy(model, args=None):
             if total_loss<0.0015:
                 break
         # raise NotImplementedError
-        print(f"[{idx}/{len(clip_point_dict)}]Determine best scale={scale_best:.4f} for this layer={layername}")
+        # print(f"[{idx}/{len(clip_point_dict)}]Determine best scale={scale_best:.4f} for this layer={layername}")
         layer_exists,model = load_noisyScale(model, layername, scale_best)
         assert layer_exists
-        print("-"*20+f"[{idx}/{len(clip_point_dict)}] End of layername={layername}, scale_best={scale_best:.4f}"+"-"*20)
+        # print("-"*20+f"[{idx}/{len(clip_point_dict)}] End of layername={layername}, scale_best={scale_best:.4f}"+"-"*20)
         scale_best_dict[layername]=scale_best
     print("scale_best_dict=",scale_best_dict)
     return
