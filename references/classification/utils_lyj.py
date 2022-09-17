@@ -4,7 +4,7 @@ from q_transformer import *
 
 import torch
 from tqdm import tqdm
-
+import time
 from timm.models.bit_config import bit_config_dict as extra_config
 
 # # Zero-shot prediction
@@ -50,7 +50,7 @@ def hook(module, input, output):
     feats[module.ownname] = {"input":None, "output":output}
     return
 
-def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=False):
+def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=False, returnAcc=False,desc="Calibration"):
     if hook_layer is None:
         hook_layer = 'visual.transformer.resblocks.0.attn.quant_in_proj'
     global feats
@@ -74,32 +74,11 @@ def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=Fal
             weight = getattr(m, "weight")
             bias = getattr(m, "bias")
 
-    # if hook_layer.endswith('linear_tokens'):
-    #     for n,m in model.named_modules():
-    #         if n.endswith(".norm1") and n.startswith(hook_layer.split('linear_tokens')[0]):
-    #             _ = m.register_forward_hook(hook) # need output: fp input without noise
-    #             hh += [_]
-    #         if n==hook_layer:
-    #             _ = m.register_forward_hook(hook) # need output: quant(input + noise) @ w +b
-    #             hh += [_]
-    #             weight = getattr(m, "weight")
-    #             bias = getattr(m, "bias")
-    # elif hook_layer.endswith('.fc1'):
-    #     for n,m in model.named_modules():
-    #         if n.endswith(".norm2") and n.startswith(hook_layer.split('mlp_channels')[0]):
-    #             _ = m.register_forward_hook(hook) # need output: fp input without noise
-    #             hh += [_]
-    #         if n==hook_layer:
-    #             _ = m.register_forward_hook(hook) # need output: quant(input + noise) @ w +b
-    #             hh += [_]
-    #             weight = getattr(m, "weight")
-    #             bias = getattr(m, "bias")
-
     criterion = torch.nn.MSELoss()
     with torch.no_grad():
         top1, top5, n = 0., 0., 0.
         total_loss = 0
-        for i, (images, target) in enumerate(tqdm(data_loader,desc='Calibration:',disable=False)):
+        for i, (images, target) in enumerate(tqdm(data_loader,desc=desc,disable=False)):
         # for i, (images, target) in enumerate(data_loader):
             images = images.cuda()
             target = target.cuda()
@@ -138,7 +117,10 @@ def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=Fal
         feats={}
         # print(model)
     # print(f"Top-5 accuracy: {top5:.2f}")
-    return total_loss
+    if returnAcc:
+        return total_loss,top1
+    else:
+        return total_loss
 
 def noisy_to(model, layername):
     raise NotImplementedError
@@ -248,33 +230,37 @@ def easyNoisy(model, args=None):
     # raise NotImplementedError
     # clip_point_dict = extra_config['q_resmlp_a6w8']
     scale_best_dict = {}
+    time_past = 0
     for idx, layername in enumerate(focus_on_names):
         model = quant_to(model, layername)
         # model = noisy_to(model, layername)
         # model = static_to(model, layername)
         lowest_loss = 100
         abs_max_best = 100
-        for step in [ii*0.01 for ii in range(40)]:
-        # for step in [ii*0.01 for ii in range(1)]:
+        top1 = 0
+        time_left = 0
+        search_space = [ii*0.01 for ii in range(50)]
+        for iistep, step in enumerate(search_space):
             scale = step#abs_max/64/5*(step)
-            # print(f"scale={scale:.4f}")
             layer_exists,model = load_noisyScale(model, layername, scale)
-            # print(model)
             assert layer_exists
+            t0=time.time()
+            total_loss, top1 = inference_all(model, data_loader, hook_layer=layername,scale=scale,desc=f"{time_left/60:.1f} min", returnAcc=True)
+            duration = time.time()-t0
+            time_past += duration
+            time_left = duration*(len(focus_on_names)-idx-1)*len(search_space)+duration*(len(search_space)-iistep-1)
 
-            total_loss = inference_all(model, data_loader, hook_layer=layername,scale=scale)
-            # print(model)
-            # raise NotImplementedError
             if total_loss<lowest_loss:
                 lowest_loss = total_loss
                 scale_best = scale
+                top1_best = top1
             if total_loss<0.0015:
                 break
-        # raise NotImplementedError
-        # print(f"[{idx}/{len(clip_point_dict)}]Determine best scale={scale_best:.4f} for this layer={layername}")
+
         layer_exists,model = load_noisyScale(model, layername, scale_best)
         assert layer_exists
-        # print("-"*20+f"[{idx}/{len(clip_point_dict)}] End of layername={layername}, scale_best={scale_best:.4f}"+"-"*20)
+        print("-"*20+f"[{idx}/{len(focus_on_names)}] layername={layername}, scale={scale_best:.4f}, " +
+                f"loss={lowest_loss:.4f}, top1={top1_best:.2f}"+"-"*20)
         scale_best_dict[layername]=scale_best
     print("scale_best_dict=",scale_best_dict)
     return
