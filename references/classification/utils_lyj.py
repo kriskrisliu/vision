@@ -30,15 +30,20 @@ def quant_to(model, layername):
 def fp_model(model):
     for n,m in model.named_modules():
         setattr_depend(m,'full_precision_flag',True)
-        setattr_depend(m,'running_stat',False)
+        setattr_depend(m,'running_stat',True)
     return model
 
 def load_clamp_scheme(model, layername, clip_point):
     layer_exists = False
     for name ,mm in model.named_modules():
-        # print(name,layername)
         if name==layername:
-            setattr(mm, "clip_point", clip_point)
+            setattr(mm, 'running_stat', False)
+            if type(clip_point) is tuple:
+                x_min_temp = getattr(mm,"x_min")
+                setattr(mm, "x_min",torch.tensor(clip_point[0]).type_as(x_min_temp))
+                setattr(mm, "x_max",torch.tensor(clip_point[1]).type_as(x_min_temp))
+            else:
+                setattr(mm, "clip_point", clip_point)
             layer_exists = True
             break
     return layer_exists
@@ -47,7 +52,7 @@ feats = {}
 def hook(module, input, output):
     global feats
     # print(type(input),type(output))
-    feats[module.ownname] = {"input":None, "output":output}
+    feats[module.ownname] = {"input":input, "output":output}
     return
 
 def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=False, returnAcc=False,desc="Calibration"):
@@ -55,6 +60,19 @@ def inference_all(model, data_loader, hook_layer=None,scale=None, infer_only=Fal
         hook_layer = 'visual.transformer.resblocks.0.attn.quant_in_proj'
     global feats
     hh = []
+
+    new_loader = []
+    sub_batch = 16
+    for ii in range(len(data_loader)//sub_batch):
+        im,tar = ([],[])
+        for jj in range(sub_batch):
+            (im0,tar0) = data_loader[sub_batch*ii+jj]
+            im += [im0]
+            tar += [tar0]
+        im = torch.cat(im,dim=0)
+        tar = torch.cat(tar,dim=0)
+        new_loader += [(im,tar)]
+    data_loader = new_loader
 
     if hook_layer.endswith('linear_tokens'):
         fpact_name,fplinear_name = (".norm1",'linear_tokens')
@@ -171,75 +189,135 @@ def static_to(model, layername):
     return model
 def load_static_num(model,layername,num):
     layer_exists = False
-    for name,mm in model.named_modules():
-        if name == layername:
-            setattr(mm, "static_num", num)
-            layer_exists = True
+    if layername.endswith("linear_tokens"):
+        for name,mm in model.named_modules():
+            if name==layername.split('.linear_tokens')[0]:
+                setattr(mm,'static_num_token',num)
+                layer_exists = True
+                break
+    if layername.endswith("fc1"):
+        for name,mm in model.named_modules():
+            if name==layername.split('.mlp_channels')[0]:
+                setattr(mm,'static_num_channel',num)
+                layer_exists = True
+                break
+    if layername.endswith("fc2"):
+        for name,mm in model.named_modules():
+            if name==layername.split('.fc2')[0]:
+                setattr(mm,'static_num',num)
+                layer_exists = True
+                break
     return layer_exists, model
 @torch.no_grad()
-def easyStatic(model):
+def easyStatic(model, args=None):
     print("start searching for static number!")
-    clean_model(model)
-    # dataVolume = 32
-    data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")#[:dataVolume]#[:16]
-
-    clip_point_dict = extra_config['clip-point-deit_base_patch16_224-4bit']
-    num_best_dict = {}
-    for idx,(layername, abs_max) in enumerate(clip_point_dict.items()):
-        model = quant_to(model, layername)
-        model = static_to(model, layername)
-        layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max)
-        lowest_loss = 100
-        abs_max_best = 100
-        # if idx<=19:
-        #     num_best = extra_config['static-point-deit_base_patch16_224-4bit-2nd-0.01x60'].get(layername)
-        #     load_static_num(model,layername,num_best)
-        #     num_best_dict[layername]=num_best
-        #     print(f"[idx={idx},name={layername}]")
-        #     continue
-        # print(num_best_dict)
-        for step in [ii for ii in range(0,30)]+[-ii for ii in range(1,30)]:
-            num = step*0.01#abs_max/64/5*(step)
-            layer_exists,model = load_static_num(model, layername, num)
-            assert layer_exists
-            total_loss = inference_all(model, data_loader, hook_layer=layername,scale=num)
-            # total_loss = total_loss/dataVolume*16
-            if total_loss<lowest_loss:
-                lowest_loss = total_loss
-                num_best = num
-            if total_loss<0.0015:
-                break
-        print(f"Determine best num={num_best:.2f} for this layer={layername}, lowest_loss={lowest_loss:.4f}")
-        layer_exists,model = load_static_num(model, layername, num_best)
-        assert layer_exists
-        print("-"*20+f"[{idx}/{len(clip_point_dict)}] End of layername={layername}, num_best={num_best:.2f}, lowest_loss={lowest_loss:.4f}"+"-"*20)
-        num_best_dict[layername]=num_best
-    print("num_best_dict=",num_best_dict)
-    return model
-@torch.no_grad()
-def easyNoisy(model, args=None):
-    print("start searching for noisy scale!")
-    clean_model(model)
     data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")
-    # data_loader = data_loader[:len(data_loader)//2]
 
     focus_on_names = []
     for name,mm in model.named_modules():
         if name.endswith('linear_tokens') or name.endswith('fc1') or name.endswith('fc2'):
             focus_on_names += [name]
-    # raise NotImplementedError
-    # clip_point_dict = extra_config['q_resmlp_a6w8']
+
+    clip_point_dict = extra_config['q_resmlp_a6w8_clip_point_fp_and_easyQuant']
+    noise_config = {}
+    # noise_config = extra_config['q_resmlp_a6w8_noise_with_clip']
+
     scale_best_dict = {}
     time_past = 0
     for idx, layername in enumerate(focus_on_names):
         model = quant_to(model, layername)
-        # model = noisy_to(model, layername)
-        # model = static_to(model, layername)
+
+        # if noise_config!={}:
+        #     layer_exists,model=load_noisyScale(model,layername,noise_config.get(layername))
+
+        if layername.endswith('linear_tokens'):
+            clip_layer = layername.replace("linear_tokens","quant_norm1")
+        elif layername.endswith('fc1'):
+            clip_layer = layername.replace("mlp_channels.fc1","quant_norm2")
+        elif layername.endswith('fc2'):
+            clip_layer = layername.replace("fc2","quant_act")
+        # (xmin,xmax) = clip_point_dict.get(clip_layer)
+        # if (abs(xmax-xmin))<100:
+        #     continue
+        # else:
+        #     print(layername,">100",xmin,xmax)
+        #     step_scale = (xmax-xmin)/63/100
+        # continue
+
         lowest_loss = 100
         abs_max_best = 100
         top1 = 0
         time_left = 0
-        search_space = [ii*0.01 for ii in range(50)]
+        search_space = [ii*0.01 for ii in range(50)] + [-ii*0.01 for ii in range(1,50)]
+        # search_space = [ii*step_scale for ii in range(100)]
+        for iistep, step in enumerate(search_space):
+            scale = step#abs_max/64/5*(step)
+            layer_exists,model = load_static_num(model, layername, scale)
+            assert layer_exists
+            t0=time.time()
+            total_loss, top1 = inference_all(model, data_loader, hook_layer=layername,scale=scale,
+                                    desc=f"[{iistep}/{len(search_space)}][{time_left/60:.1f} min]",
+                                    returnAcc=True)
+            duration = time.time()-t0
+            time_past += duration
+            time_left = duration*(len(focus_on_names)-idx-1)*len(search_space)+duration*(len(search_space)-iistep-1)
+
+            if total_loss<lowest_loss:
+                lowest_loss = total_loss
+                scale_best = scale
+                top1_best = top1
+            if total_loss<0.0015:
+                break
+
+        layer_exists,model = load_static_num(model, layername, scale_best)
+        assert layer_exists
+        print("-"*20+f"[{idx}/{len(focus_on_names)}] layername={layername}, scale={scale_best:.4f}, " +
+                f"loss={lowest_loss:.4f}, top1={top1_best:.2f}"+"-"*20)
+        scale_best_dict[layername]=scale_best
+    print("scale_best_dict=",scale_best_dict)
+    return
+@torch.no_grad()
+def easyNoisy(model, args=None):
+    print("start searching for noisy scale!")
+    data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")
+
+    focus_on_names = []
+    for name,mm in model.named_modules():
+        if name.endswith('linear_tokens') or name.endswith('fc1') or name.endswith('fc2'):
+            focus_on_names += [name]
+
+    clip_point_dict = extra_config['q_resmlp_a6w8_clip_point_fp_and_easyQuant']
+    noise_config = {}
+
+    scale_best_dict = {}
+    time_past = 0
+    for idx, layername in enumerate(focus_on_names):
+        model = quant_to(model, layername)
+
+        noise_config = extra_config['q_resmlp_a6w8_noise_with_clip']
+        if noise_config!={}:
+            layer_exists,model=load_noisyScale(model,layername,noise_config.get(layername))
+
+        if layername.endswith('linear_tokens'):
+            clip_layer = layername.replace("linear_tokens","quant_norm1")
+        elif layername.endswith('fc1'):
+            clip_layer = layername.replace("mlp_channels.fc1","quant_norm2")
+        elif layername.endswith('fc2'):
+            clip_layer = layername.replace("fc2","quant_act")
+        (xmin,xmax) = clip_point_dict.get(clip_layer)
+        if (abs(xmax-xmin))<100:
+            continue
+        else:
+            print(layername,">100",xmin,xmax)
+            step_scale = (xmax-xmin)/63/100
+        # continue
+
+        lowest_loss = 100
+        abs_max_best = 100
+        top1 = 0
+        time_left = 0
+        # search_space = [ii*0.02 for ii in range(100)]
+        search_space = [ii*step_scale for ii in range(100)]
         for iistep, step in enumerate(search_space):
             scale = step#abs_max/64/5*(step)
             layer_exists,model = load_noisyScale(model, layername, scale)
@@ -254,8 +332,8 @@ def easyNoisy(model, args=None):
                 lowest_loss = total_loss
                 scale_best = scale
                 top1_best = top1
-            if total_loss<0.0015:
-                break
+            # if total_loss<0.0015:
+            #     break
 
         layer_exists,model = load_noisyScale(model, layername, scale_best)
         assert layer_exists
@@ -309,45 +387,135 @@ def easyQuant_txt(model, classnames, templates):
         print("-"*10+f"[{idx}/{len(clip_point_dict)}] abs_max_best={abs_max_best}"+"-"*10)
         hh.remove()
 
+def inference_all_easyQuant(model, data_loader, hook_layer=None,scale=None, infer_only=False, returnAcc=False,desc="Calibration"):
+    if hook_layer is None:
+        hook_layer = 'visual.transformer.resblocks.0.attn.quant_in_proj'
+    global feats
+    hh = []
+
+    if hook_layer.endswith('.quant_norm1'):
+        fpact_name,fplinear_name = ("quant_norm1",'linear_tokens')
+    elif hook_layer.endswith('.quant_norm2'):
+        fpact_name,fplinear_name = ("quant_norm2",'mlp_channels.fc1')
+    elif hook_layer.endswith('.quant_act'):
+        fpact_name,fplinear_name = ("mlp_channels.quant_act",'mlp_channels.fc2')
+    else:
+        raise NotImplementedError
+    for n,m in model.named_modules():
+        if n.endswith(fplinear_name) and n.startswith(hook_layer.split(fpact_name)[0]):
+            _ = m.register_forward_hook(hook) # need Input: fp input
+            weight = getattr(m, "weight")
+            bias = getattr(m, "bias")
+            hh += [_]
+        if n==hook_layer:
+            _ = m.register_forward_hook(hook) # need output: quant(input) @ w +b
+            hh += [_]
+
+    criterion = torch.nn.MSELoss()
+    with torch.no_grad():
+        top1, top5, n = 0., 0., 0.
+        total_loss = 0
+        for i, (images, target) in enumerate(tqdm(data_loader,desc=desc,disable=False)):
+        # for i, (images, target) in enumerate(data_loader):
+            images = images.cuda()
+            target = target.cuda()
+            # predict
+            output = model(images)
+            # measure accuracy
+            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            top1 += acc1
+            top5 += acc5
+            n += images.size(0)
+            # calc loss
+
+            if infer_only:
+                loss=0
+            else:
+                if hook_layer.endswith('.quant_norm1'):
+                    fpinput = feats[hook_layer]['input'][0].transpose(1, 2)
+                elif hook_layer.endswith('.quant_norm2'):
+                    fpinput = feats[hook_layer]['input'][0]
+                elif hook_layer.endswith('.quant_act'):
+                    fpinput = feats[hook_layer]['input'][0]
+                else:
+                    raise NotImplementedError
+                fpoutput = F.linear(fpinput,weight,bias)
+                loss = criterion(fpoutput,feats[hook_layer.replace(fpact_name,fplinear_name)]["output"][0])
+            total_loss += loss
+    top1 = (top1 / n) * 100
+    top5 = (top5 / n) * 100
+
+    if infer_only:
+        print(f"Top-1 accuracy: {top1:.2f}")
+    else:
+        print(f"Top-1 accuracy: {top1:.2f}, total_loss={total_loss:.4f}, scale={scale}")
+        for _ in hh:
+            _.remove()
+        feats={}
+        # print(model)
+    # print(f"Top-5 accuracy: {top5:.2f}")
+    if returnAcc:
+        return total_loss,top1
+    else:
+        return total_loss
+
+
 # easyQuant image encoder
 @torch.no_grad()
 def easyQuant(model):
     # from quant_config_vit import extra_config
     data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")[:]
-    clip_point_dict = {}
-    for k,v in extra_config['clip-point-deit_base_patch16_224-fp'].items():
-        clip_point_dict[k] = max(abs(v[0]),abs(v[1]))
-    # clip_point_dict = extra_config['mb_large_fp_clip_point']
+    clip_point_dict = extra_config['q_resmlp_a6w8_clip_point_fp']
     model = fp_model(model)
+    print("-"*80)
     print(model)
     # total_loss = inference_all(model, data_loader, hook_layer=None, scale="FP")
-    # print("FP model:~62%")
     print("-"*80)
     abs_max_best_dict = {}
-    for idx,(layername, abs_max) in enumerate(clip_point_dict.items()):
-        print(layername)
+    for idx,(layername, (amin,amax)) in enumerate(clip_point_dict.items()):
         model = quant_to(model, layername)
+        if layername.endswith(".quant_norm1") or layername.endswith(".quant_norm2") or layername.endswith(".quant_act"):
+            print("easyQuant:",layername)
+            pass
+        else:
+            for n0,m0 in model.named_modules():
+                if n0==layername and hasattr(m0,"running_stat"):
+                    layer_exists = load_clamp_scheme(model, layername, clip_point=(amin,amax))
+                    assert layer_exists
+                    break
+            print("==> load min max:",layername)
+            continue
         lowest_loss = 1000
-        abs_max_best = 1000
-        for step in ([10]+[ii for ii in range(1,10)]+[ii for ii in range(11,20)]):
-            abs_max_attemp = abs_max*(step/10.)
-            layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max_attemp)
-            assert layer_exists
-            # if idx<70:
-            #     lowest_loss=0
-            #     abs_max_best = abs_max_attemp
-            #     break
-            total_loss = inference_all(model, data_loader, hook_layer=layername, scale=f"{abs_max_attemp:.4f}")
-            if total_loss<lowest_loss:
-                lowest_loss = total_loss
-                abs_max_best = abs_max_attemp
-            if total_loss<0.05:
-                break
-        print(f"[{idx}/{len(clip_point_dict)}]For this layer={layername}, lowest_loss={lowest_loss:.4f}, determine best abs_max={abs_max_best:.4f}")
-        layer_exists = load_clamp_scheme(model, layername, clip_point=abs_max_best)
+        max_best = amax
+        min_best = amin
+        for search_mode in ["pos","neg"]:
+            if search_mode=='neg':
+                print("*"*80)
+            # for step in [10,2]:#([10]+[ii for ii in range(1,10)]+[ii for ii in range(11,20)]):
+            for step in ([10]+[ii for ii in range(1,10)]+[ii for ii in range(11,20)]):
+                if search_mode=='pos':
+                    abs_max_attemp = amax*(step/10.)
+                    layer_exists = load_clamp_scheme(model, layername, clip_point=(amin,abs_max_attemp))
+                else:
+                    abs_max_attemp = amin*(step/10.)
+                    layer_exists = load_clamp_scheme(model, layername, clip_point=(abs_max_attemp,max_best))
+                assert layer_exists
+                total_loss = inference_all_easyQuant(model, data_loader, desc=search_mode,hook_layer=layername,
+                                                    scale=f"{abs_max_attemp:.4f}")
+                if total_loss<lowest_loss:
+                    lowest_loss = total_loss
+                    if search_mode=='pos':
+                        max_best = abs_max_attemp
+                    else:
+                        min_best = abs_max_attemp
+                if total_loss<0.05:
+                    break
+        layer_exists = load_clamp_scheme(model, layername, clip_point=(min_best,max_best))
         assert layer_exists
-        print("-"*20+f"[{idx}/{len(clip_point_dict)}] End of layername={layername}, abs_max_best={abs_max_best:.4f}"+"-"*20)
-        abs_max_best_dict[layername]=abs_max_best
+        print(f"[{idx}/{len(clip_point_dict)}]"+"-"*20+f"End of layername={layername},"+
+                f"clip_point=({min_best:.4f},{max_best:.4f}), lowest_loss={lowest_loss:.4f}"+"-"*20)
+        abs_max_best_dict[layername]=(min_best,max_best)
+        print("-"*80)
     print(abs_max_best_dict)
     return model
 

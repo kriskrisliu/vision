@@ -78,6 +78,7 @@ class q_Mlp(nn.Module):
         self.use_noise = False
         self.register_buffer('noise_hidden_feat', 2*torch.rand(size=(hidden_features,))-1)
         self.register_buffer('noiseScale',torch.tensor([0.05]))
+        self.static_num = 0.
 
     def set_param(self, unit):
         unit.fc1.in_features = self.out_features
@@ -97,9 +98,9 @@ class q_Mlp(nn.Module):
 
         if not self.use_noise:
             self.noiseScale = torch.tensor([0.]).type_as(self.noiseScale)
-        x = x+self.noise_hidden_feat.view(1,1,-1)*self.noiseScale
+        x = x+(self.noise_hidden_feat.view(1,1,-1)*self.noiseScale+self.static_num)
         x, act_scaling_factor = self.quant_act(x)
-        x, fc_scaling_factor = self.fc2(x, act_scaling_factor,noise=self.noise_hidden_feat*self.noiseScale)
+        x, fc_scaling_factor = self.fc2(x, act_scaling_factor,noise=(self.noise_hidden_feat*self.noiseScale+self.static_num))
 
         return x, act_scaling_factor, fc_scaling_factor
 
@@ -249,6 +250,8 @@ class q_ResBlock(nn.Module):
         self.register_buffer('noiseScale_token',torch.tensor([0.05]))
         self.register_buffer('noise_channel', 2*torch.rand(size=(dim,))-1)
         self.register_buffer('noiseScale_channel',torch.tensor([0.05]))
+        self.static_num_token = 0.
+        self.static_num_channel = 0.
 
     def __repr__(self):
         s = super(q_ResBlock, self).__repr__()
@@ -278,7 +281,7 @@ class q_ResBlock(nn.Module):
             x= self.norm1(x)
             if not self.use_noise_token:
                 self.noiseScale_token = torch.tensor([0.]).type_as(self.noiseScale_token)
-            noise = self.noise_token*self.noiseScale_token
+            noise = self.noise_token*self.noiseScale_token+self.static_num_token
             x = x+noise.view(1,-1,1)
             # noise=None
             x, act_scaling_factor = self.quant_norm1(x)
@@ -298,7 +301,7 @@ class q_ResBlock(nn.Module):
             x= self.norm2(x)
             if not self.use_noise_channel:
                 self.noiseScale_channel = torch.tensor([0.]).type_as(self.noiseScale_channel)
-            noise = self.noise_channel*self.noiseScale_channel
+            noise = self.noise_channel*self.noiseScale_channel+self.static_num_channel
             x = x+noise.view(1,1,-1)
             x, act_scaling_factor = self.quant_norm2(x)
         x, act_scaling_factor, fc_scaling_factor= self.mlp_channels(x,act_scaling_factor,noise)
@@ -392,8 +395,6 @@ class qmulti_ResBlock(nn.Module):
         x = x + identity
         x, scaling_factor_int32 = self.quant_act_int32_channels(x, act_scaling_factor, norm_scaling_factor, identity, scaling_factor_int32, None)
         return (x, scaling_factor_int32)
-
-
 
 class q_MlpMixer(nn.Module):
     def __init__(
@@ -639,6 +640,7 @@ def q_resmlp(pretrained=False,model=None, **kwargs):
 
     bit_config=bit_config_dict["q_resmlp_a6w8"]
     # bit_config=bit_config_dict["q_resmlp_uniform16"]
+    print(bit_config)
     for name, m in model.named_modules():
         setattr(m, 'ownname', name)
         if name in bit_config.keys():

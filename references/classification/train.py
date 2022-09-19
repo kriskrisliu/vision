@@ -221,9 +221,12 @@ def main(args):
         dataset_test, batch_size=args.batch_size, sampler=test_sampler, num_workers=args.workers, pin_memory=True
     )
 
+
+
+
+
     print("Creating model [ResMLP!!]")
     # model = torchvision.models.get_model(args.model, weights=args.weights, num_classes=num_classes)
-
     """------------------------------------------
     Quantization implement with HAWQ repository |
     ------------------------------------------"""
@@ -232,58 +235,55 @@ def main(args):
     import timm
     # model = timm.create_model('resmlp_24_224',pretrained=True) # fp:79.382
     model = timm.create_model('q_resmlp',pretrained=True) # fp:79.382
-    # for name,pp in model.named_parameters():
-    #     print(name)
-    # raise NotImplementedError
-    # for name,mm in model.named_modules():
-    #     print(name)
-    # print("-"*80)
-    # print(model)
-    # print("-"*80)
-    # raise NotImplementedError
-    # from quant_config import extra_config
-    from quant_config_deit import extra_config
+
+    from timm.models.bit_config import bit_config_dict as extra_config
     clip_config = {}
-    # print(extra_config)
-    # clip_config = extra_config['clip-point-deit_base_patch16_224-4bit']
-    static_config = extra_config['static-point-deit_base_patch16_224-4bit-2nd-0.01x60']
-    noise_config = extra_config['noise-deit_base_patch16_224-4bit-1st']
+    clip_config = extra_config['q_resmlp_a6w8_clip_point_fp_and_easyQuant']
+    # static_config = extra_config['static-point-deit_base_patch16_224-4bit-2nd-0.01x60']
+    # noise_config = extra_config['q_resmlp_a6w8_noise']
+    noise_config = extra_config['q_resmlp_a6w8_noise_with_clip']
     if args.noQuant:
         pass
     else:
-        model = hawq_quant(model,model_name='deit')
+        # model = hawq_quant(model,model_name='deit')
         for name,m in model.named_modules():
-            # print(name)
-            # if name not in clip_config.keys() and f"{name}.Qact" not in clip_config.keys():
-            #     continue
-            setattr_depend(m, "bias_bit", 32)
-            setattr_depend(m, 'quant_mode', 'symmetric')
-            setattr_depend(m, 'quantize_bias', True)
-            setattr_depend(m, 'per_channel', True)
-            setattr_depend(m, 'act_percentile', 0)
-            setattr_depend(m, 'act_range_momentum', -1)
-            setattr_depend(m, 'weight_percentile', 0)
-            setattr_depend(m, 'fix_flag', False)
-            setattr_depend(m, 'ownname', name)
-
-            setattr_depend(m, 'full_precision_flag', args.full_precision_flag)##
-            setattr_depend(m, 'running_stat', args.running_stat)
-
-            if args.use_noise:
-                setattr_depend(m, 'use_noise', True)
-                setattr_depend(m,"noiseScale",noise_config.get(name,0))
-
+            setattr_depend(m, 'full_precision_flag', args.full_precision_flag)#
+            setattr_depend(m, 'running_stat', args.running_stat)# conflict with clip_point!
+            if args.use_noise and (name in noise_config.keys()):
+                if name.endswith("linear_tokens"):
+                    module_name = name.replace(".linear_tokens","")
+                    noiseFlag_name = "use_noise_token"
+                    noiseScale_name = "noiseScale_token"
+                elif name.endswith(".fc1"):
+                    module_name = name.replace(".mlp_channels.fc1","")
+                    noiseFlag_name = "use_noise_channel"
+                    noiseScale_name = "noiseScale_channel"
+                elif name.endswith(".fc2"):
+                    module_name = name.replace(".fc2","")
+                    noiseFlag_name = "use_noise"
+                    noiseScale_name = "noiseScale"
+                # assert hasattr(m,noiseFlag_name)
+                # assert hasattr(m,noiseScale_name)
+                for n0,m0 in model.named_modules():
+                    if n0==module_name:
+                        print(n0,noiseFlag_name,noiseScale_name,noise_config.get(name))
+                        setattr(m0,noiseFlag_name,True)
+                        noiseScale = getattr(m0,noiseScale_name)
+                        setattr(m0,noiseScale_name,torch.tensor([noise_config.get(name)]).type_as(noiseScale))
+                        break
             if args.use_static:
                 setattr_depend(m, 'use_static', args.use_static)
                 setattr_depend(m, 'static_num', static_config.get(name))
 
             if clip_config!={}:
-                setattr_depend(m, 'clip_point', clip_config.get(name))
-            # print(name,clip_config.get(name))
+                if name in clip_config.keys():
+                    clip_point = clip_config.get(name)
+                    x_min_temp = getattr(m,"x_min")
+                    setattr(m, "x_min",torch.tensor(clip_point[0]).type_as(x_min_temp))
+                    setattr(m, "x_max",torch.tensor(clip_point[1]).type_as(x_min_temp))
+                    setattr(m,"running_stat",False)
+        print("-"*80)
 
-            bitwidth = 4
-            setattr_depend(m, 'activation_bit', bitwidth)
-            setattr_depend(m, 'weight_bit', bitwidth)
     print(model)
     # raise NotImplementedError
     print_at_end = True
@@ -291,6 +291,9 @@ def main(args):
     """------------------------------------------
     Quantization implement with HAWQ repository |
     ------------------------------------------"""
+
+
+
 
     model.to(device)
 
@@ -400,6 +403,9 @@ def main(args):
         # We disable the cudnn benchmarking because it can noticeably affect the accuracy
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
+
+
+
         """------------------------------------------
         Quantization implement with HAWQ repository |
         ------------------------------------------"""
@@ -410,12 +416,15 @@ def main(args):
             #     print(n,(hasattr(m,"noiseScale") or hasattr(m,'noiseScale_token') or hasattr(m,'noiseScale_channel')))
             # import pdb; pdb.set_trace()
             # model_without_ddp = easyQuant(model_without_ddp)
-            # model_without_ddp = easyStatic(model_without_ddp)
-            model_without_ddp = easyNoisy(model_without_ddp)
+            model_without_ddp = easyStatic(model_without_ddp)
+            # model_without_ddp = easyNoisy(model_without_ddp)
             # raise NotImplementedError
         """------------------------------------------
         Quantization implement with HAWQ repository |
         ------------------------------------------"""
+
+
+
         if model_ema:
             evaluate(model_ema, criterion, data_loader_test, device=device, log_suffix="EMA")
         else:
@@ -430,15 +439,15 @@ def main(args):
                     if len(pair)==2:
                         print(n[:-6],pair[0].item(),pair[1].item())
                         pair = []
-            pair = []
-            abs_max_dict = {}
-            for n,buf in model.named_buffers():
-                if n.endswith("x_min") or n.endswith("x_max"):
-                    pair += [buf]
-                    if len(pair)==2:
-                        print(n[:-6],pair[0].item(),pair[1].item())
-                        abs_max_dict[n[:-6]] = max(abs(pair[0].item()),abs(pair[1].item()))
-                        pair = []
+            # pair = []
+            # abs_max_dict = {}
+            # for n,buf in model.named_buffers():
+            #     if n.endswith("x_min") or n.endswith("x_max"):
+            #         pair += [buf]
+            #         if len(pair)==2:
+            #             print(n[:-6],pair[0].item(),pair[1].item())
+            #             abs_max_dict[n[:-6]] = max(abs(pair[0].item()),abs(pair[1].item()))
+            #             pair = []
             # print(abs_max_dict)
         return
 
