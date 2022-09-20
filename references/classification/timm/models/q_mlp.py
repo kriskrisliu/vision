@@ -79,6 +79,10 @@ class q_Mlp(nn.Module):
         self.register_buffer('noise_hidden_feat', 2*torch.rand(size=(hidden_features,))-1)
         self.register_buffer('noiseScale',torch.tensor([0.05]))
         self.static_num = 0.
+    def __repr__(self):
+        s = super(q_Mlp, self).__repr__()
+        s = "(" + s + f" use_noise={self.use_noise}, noiseScale={self.noiseScale}, static_num={self.static_num})"
+        return s
 
     def set_param(self, unit):
         unit.fc1.in_features = self.out_features
@@ -255,7 +259,9 @@ class q_ResBlock(nn.Module):
 
     def __repr__(self):
         s = super(q_ResBlock, self).__repr__()
-        s = "(" + s + " setnorm={})".format(self.setnorm)
+        s = "(" + s + f" use_noise_token={self.use_noise_token}, noiseScale_token={self.noiseScale_token}" +\
+            f"use_noise_channel={self.use_noise_channel}, noiseScale_channel={self.noiseScale_channel}, " +\
+            f"static_num_token={self.static_num_token}, static_num_channel={self.static_num_channel})"
         return s
 
     def set_param(self, unit):

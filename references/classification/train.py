@@ -239,9 +239,9 @@ def main(args):
     from timm.models.bit_config import bit_config_dict as extra_config
     clip_config = {}
     clip_config = extra_config['q_resmlp_a6w8_clip_point_fp_and_easyQuant']
-    # static_config = extra_config['static-point-deit_base_patch16_224-4bit-2nd-0.01x60']
+    static_config = extra_config['q_resmlp_a6w8_static_with_clip']
     # noise_config = extra_config['q_resmlp_a6w8_noise']
-    noise_config = extra_config['q_resmlp_a6w8_noise_with_clip']
+    noise_config = extra_config['q_resmlp_a6w8_noise_with_clip_and_static']
     if args.noQuant:
         pass
     else:
@@ -271,9 +271,24 @@ def main(args):
                         noiseScale = getattr(m0,noiseScale_name)
                         setattr(m0,noiseScale_name,torch.tensor([noise_config.get(name)]).type_as(noiseScale))
                         break
-            if args.use_static:
-                setattr_depend(m, 'use_static', args.use_static)
-                setattr_depend(m, 'static_num', static_config.get(name))
+            if args.use_static and (name in static_config.keys()):
+                if name.endswith("linear_tokens"):
+                    module_name = name.replace(".linear_tokens","")
+                    static_num_name = "static_num_token"
+                elif name.endswith(".fc1"):
+                    module_name = name.replace(".mlp_channels.fc1","")
+                    static_num_name = "static_num_channel"
+                elif name.endswith(".fc2"):
+                    module_name = name.replace(".fc2","")
+                    static_num_name = "static_num"
+
+                for n0,m0 in model.named_modules():
+                    if n0==module_name:
+                        # print(n0,noiseFlag_name,noiseScale_name,noise_config.get(name))
+                        # setattr(m0,noiseFlag_name,True)
+                        static_num = getattr(m0,static_num_name)
+                        setattr(m0,static_num_name,noise_config.get(name))
+                        break
 
             if clip_config!={}:
                 if name in clip_config.keys():
@@ -416,8 +431,8 @@ def main(args):
             #     print(n,(hasattr(m,"noiseScale") or hasattr(m,'noiseScale_token') or hasattr(m,'noiseScale_channel')))
             # import pdb; pdb.set_trace()
             # model_without_ddp = easyQuant(model_without_ddp)
-            model_without_ddp = easyStatic(model_without_ddp)
-            # model_without_ddp = easyNoisy(model_without_ddp)
+            # model_without_ddp = easyStatic(model_without_ddp)
+            model_without_ddp = easyNoisy(model_without_ddp)
             # raise NotImplementedError
         """------------------------------------------
         Quantization implement with HAWQ repository |

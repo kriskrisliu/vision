@@ -7,6 +7,17 @@ from tqdm import tqdm
 import time
 from timm.models.bit_config import bit_config_dict as extra_config
 
+def init_queue(length,val=-1):
+    return [val]*length
+def pop_put_decide(qq,val):
+    qq.pop(0)
+    qq += [val]
+    find_lowest = True
+    for elem in qq[1:]:
+        if elem <qq[0]:
+            find_lowest = False
+    return find_lowest
+
 # # Zero-shot prediction
 def accuracy(output, target, topk=(1,)):
     pred = output.topk(max(topk), 1, True, True)[1].t()
@@ -210,6 +221,7 @@ def load_static_num(model,layername,num):
     return layer_exists, model
 @torch.no_grad()
 def easyStatic(model, args=None):
+    model = fp_model(model) # full_precision_flag, running_stat
     print("start searching for static number!")
     data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")
 
@@ -276,9 +288,12 @@ def easyStatic(model, args=None):
         scale_best_dict[layername]=scale_best
     print("scale_best_dict=",scale_best_dict)
     return
+
+import json
 @torch.no_grad()
 def easyNoisy(model, args=None):
     print("start searching for noisy scale!")
+    # model = fp_model(model) # full_precision_flag, running_stat
     data_loader = torch.load("calibrationData1024-32x32-ImageNet.pt")
 
     focus_on_names = []
@@ -288,16 +303,18 @@ def easyNoisy(model, args=None):
 
     clip_point_dict = extra_config['q_resmlp_a6w8_clip_point_fp_and_easyQuant']
     noise_config = {}
+    static_config = extra_config['q_resmlp_a6w8_static_with_clip']
 
     scale_best_dict = {}
     time_past = 0
     for idx, layername in enumerate(focus_on_names):
         model = quant_to(model, layername)
-
-        noise_config = extra_config['q_resmlp_a6w8_noise_with_clip']
+        layer_exists,model = load_static_num(model, layername, static_config.get(layername))
+        # noise_config = extra_config['q_resmlp_a6w8_noise_with_clip']
         if noise_config!={}:
             layer_exists,model=load_noisyScale(model,layername,noise_config.get(layername))
 
+        #  calculate noise based on clip range
         if layername.endswith('linear_tokens'):
             clip_layer = layername.replace("linear_tokens","quant_norm1")
         elif layername.endswith('fc1'):
@@ -305,25 +322,31 @@ def easyNoisy(model, args=None):
         elif layername.endswith('fc2'):
             clip_layer = layername.replace("fc2","quant_act")
         (xmin,xmax) = clip_point_dict.get(clip_layer)
-        if (abs(xmax-xmin))<100:
-            continue
-        else:
-            print(layername,">100",xmin,xmax)
-            step_scale = (xmax-xmin)/63/100
+        step_scale = (xmax-xmin)/63/100
+        # if (abs(xmax-xmin))<100:
+        #     continue
+        # else:
+        #     print(layername,">100",xmin,xmax)
+        #     step_scale = (xmax-xmin)/63/100
         # continue
 
         lowest_loss = 100
         abs_max_best = 100
         top1 = 0
         time_left = 0
-        # search_space = [ii*0.02 for ii in range(100)]
+        with open(f"./LOGs/LOG-easyNoise-{idx:03d}-{layername}-model.log",'w') as fp:
+            json.dump(str(model),fp)
+
+        # search_space = [ii*0.02 for ii in range(200)]
+        # search_space = [ii*0.02 for ii in range(1)]
         search_space = [ii*step_scale for ii in range(100)]
         for iistep, step in enumerate(search_space):
             scale = step#abs_max/64/5*(step)
             layer_exists,model = load_noisyScale(model, layername, scale)
             assert layer_exists
             t0=time.time()
-            total_loss, top1 = inference_all(model, data_loader, hook_layer=layername,scale=scale,desc=f"{time_left/60:.1f} min", returnAcc=True)
+            total_loss, top1 = inference_all(model, data_loader, hook_layer=layername,scale=scale,
+                        desc=f"[{iistep}/{len(search_space)}][{time_left/60:.1f} min]", returnAcc=True)
             duration = time.time()-t0
             time_past += duration
             time_left = duration*(len(focus_on_names)-idx-1)*len(search_space)+duration*(len(search_space)-iistep-1)
